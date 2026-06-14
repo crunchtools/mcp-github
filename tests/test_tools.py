@@ -30,10 +30,10 @@ class TestToolRegistration:
             assert callable(func), f"{name} is not callable"
 
     def test_tool_count(self) -> None:
-        """Server should export exactly 15 tools."""
+        """Server should export exactly 17 tools."""
         from mcp_github_crunchtools.tools import __all__
 
-        assert len(__all__) == 15
+        assert len(__all__) == 17
 
 
 class TestErrorSafety:
@@ -313,6 +313,57 @@ class TestIssueTools:
             "html_url": "https://github.com/o/r/issues/7",
             "title": "Bug found",
         }
+
+    async def test_update_issue_close(self) -> None:
+        from mcp_github_crunchtools.tools import update_issue
+
+        resp = _mock_response(
+            json_data={
+                "number": 4,
+                "state": "closed",
+                "html_url": "https://github.com/o/r/issues/4",
+                "title": "Fixed",
+            },
+        )
+
+        with _patch_client(resp) as mock_client:
+            result = await update_issue(
+                owner="o",
+                repo="r",
+                issue_number=4,
+                state="closed",
+                state_reason="completed",
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["method"] == "PATCH"
+            assert call.kwargs["json"]["state"] == "closed"
+            assert call.kwargs["json"]["state_reason"] == "completed"
+
+        assert result["state"] == "closed"
+        assert result["number"] == 4
+
+    async def test_update_pull_request_close(self) -> None:
+        from mcp_github_crunchtools.tools import update_pull_request
+
+        resp = _mock_response(
+            json_data={
+                "number": 3,
+                "state": "closed",
+                "html_url": "https://github.com/o/r/pull/3",
+                "title": "WIP",
+            },
+        )
+
+        with _patch_client(resp) as mock_client:
+            result = await update_pull_request(
+                owner="o", repo="r", pull_number=3, state="closed"
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["method"] == "PATCH"
+            assert "/pulls/3" in call.kwargs["url"]
+            assert call.kwargs["json"]["state"] == "closed"
+
+        assert result["state"] == "closed"
 
     @pytest.mark.asyncio
     async def test_create_issue_empty_title(self) -> None:

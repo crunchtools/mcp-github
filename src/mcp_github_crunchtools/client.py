@@ -242,6 +242,14 @@ class GitHubClient:
         """Make a PUT request."""
         return await self._request("PUT", path, json_data=json_data)
 
+    async def patch(
+        self,
+        path: str,
+        json_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make a PATCH request."""
+        return await self._request("PATCH", path, json_data=json_data)
+
     async def delete(self, path: str) -> dict[str, Any]:
         """Make a DELETE request."""
         return await self._request("DELETE", path)

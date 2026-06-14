@@ -24,6 +24,8 @@ from .tools import (
     rerun_workflow_run,
     search_code,
     search_issues,
+    update_issue,
+    update_pull_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,6 +141,47 @@ async def create_issue_comment_tool(
 
 
 @mcp.tool()
+async def update_issue_tool(
+    repo: str,
+    issue_number: int,
+    state: str | None = None,
+    state_reason: str | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    labels: list[str] | None = None,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Update a GitHub issue, including closing or reopening it.
+
+    Set state="closed" to close an issue. Set state="open" with
+    state_reason="reopened" to reopen.
+
+    Args:
+        repo: Repository name
+        issue_number: Issue number
+        state: "open" or "closed"
+        state_reason: "completed", "not_planned", or "reopened"
+        title: New title (optional)
+        body: New body (optional)
+        labels: Replacement list of label names (optional)
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        Updated issue details (number, state, html_url, title)
+    """
+    return await update_issue(
+        owner=owner,
+        repo=repo,
+        issue_number=issue_number,
+        state=state,
+        state_reason=state_reason,
+        title=title,
+        body=body,
+        labels=labels,
+    )
+
+
+@mcp.tool()
 async def list_pull_requests_tool(
     repo: str,
     owner: str | None = None,
@@ -232,6 +275,40 @@ async def get_pull_request_checks_tool(
     """
     return await get_pull_request_checks(
         owner=owner, repo=repo, pull_number=pull_number
+    )
+
+
+@mcp.tool()
+async def update_pull_request_tool(
+    repo: str,
+    pull_number: int,
+    state: str | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Update a GitHub pull request, including closing or reopening it.
+
+    This does NOT merge. Set state="closed" to close a PR without merging.
+
+    Args:
+        repo: Repository name
+        pull_number: Pull request number
+        state: "open" or "closed"
+        title: New title (optional)
+        body: New body (optional)
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        Updated PR details (number, state, html_url, title)
+    """
+    return await update_pull_request(
+        owner=owner,
+        repo=repo,
+        pull_number=pull_number,
+        state=state,
+        title=title,
+        body=body,
     )
 
 
