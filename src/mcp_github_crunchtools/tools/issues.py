@@ -132,6 +132,69 @@ async def create_issue(
     }
 
 
+async def update_issue(
+    owner: str | None,
+    repo: str,
+    issue_number: int,
+    state: str | None = None,
+    state_reason: str | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    labels: list[str] | None = None,
+) -> dict[str, Any]:
+    """Update an existing issue — including closing or reopening it.
+
+    Args:
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+        repo: Repository name
+        issue_number: Issue number
+        state: "open" or "closed" (set "closed" to close the issue)
+        state_reason: When closing, one of "completed" or "not_planned";
+            when reopening, "reopened"
+        title: New title (optional)
+        body: New body (optional)
+        labels: Replacement list of label names (optional)
+
+    Returns:
+        Updated issue details (number, state, html_url, title)
+    """
+    owner = resolve_owner(owner)
+    repo = validate_name(repo, "repo")
+    issue_number = validate_positive_int(issue_number, "issue_number")
+
+    json_data: dict[str, Any] = {}
+    if state is not None:
+        if state not in ("open", "closed"):
+            raise ValidationError("state must be 'open' or 'closed'")
+        json_data["state"] = state
+    if state_reason is not None:
+        if state_reason not in ("completed", "not_planned", "reopened"):
+            raise ValidationError(
+                "state_reason must be 'completed', 'not_planned', or 'reopened'"
+            )
+        json_data["state_reason"] = state_reason
+    if title is not None:
+        json_data["title"] = title
+    if body is not None:
+        json_data["body"] = body
+    if labels is not None:
+        json_data["labels"] = labels
+    if not json_data:
+        raise ValidationError("no fields to update")
+
+    client = get_client()
+    result = await client.patch(
+        f"/repos/{owner}/{repo}/issues/{issue_number}",
+        json_data=json_data,
+    )
+    return {
+        "number": result.get("number"),
+        "state": result.get("state"),
+        "html_url": result.get("html_url"),
+        "title": result.get("title"),
+    }
+
+
 async def create_issue_comment(
     owner: str | None,
     repo: str,
