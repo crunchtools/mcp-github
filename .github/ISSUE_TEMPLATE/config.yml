@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: GitHub API Documentation
+    url: https://docs.github.com/api/rest/
+    about: Check the GitHub REST API docs for endpoint behavior questions

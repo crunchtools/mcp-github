@@ -1,0 +1,56 @@
+# Gourmand Exceptions
+# Documented exceptions for files that legitimately trigger checks
+
+# Summary litter — CLAUDE.md is the standard Claude Code project file
+[[exceptions]]
+check = "summary_litter"
+path = "CLAUDE.md"
+justification = "Claude Code project instructions for AI assistant orientation"
+
+# Lint suppression — test intentionally passes invalid args to verify rejection
+[[exceptions]]
+check = "lint_suppression"
+path = "tests/test_validation.py"
+justification = "type: ignore[call-arg] is required to test that Pydantic rejects extra fields"
+
+# Primitive obsession — HTTP status codes and limits are standard API patterns
+[[exceptions]]
+check = "primitive_obsession"
+path = "src/mcp_github_crunchtools/client.py"
+justification = "HTTP status codes (401, 403, 404, 429, 204) and the 10MB response size limit are standard well-known constants"
+
+[[exceptions]]
+check = "primitive_obsession"
+path = "src/mcp_github_crunchtools/config.py"
+justification = "Standard default HTTP port"
+
+[[exceptions]]
+check = "primitive_obsession"
+path = "src/mcp_github_crunchtools/__init__.py"
+justification = "Standard default HTTP port"
+
+# Implicit state machine — optional parameter builders are not state machines
+[[exceptions]]
+check = "implicit_state_machine"
+path = "src/mcp_github_crunchtools/tools/issues.py"
+justification = "Optional API parameter builders use simple if-guards to add query params"
+
+[[exceptions]]
+check = "implicit_state_machine"
+path = "src/mcp_github_crunchtools/tools/pull_requests.py"
+justification = "Optional API parameter builders use simple if-guards to add query params"
+
+[[exceptions]]
+check = "implicit_state_machine"
+path = "src/mcp_github_crunchtools/tools/files.py"
+justification = "Optional API parameter builders use simple if-guards to add query params"
+
+[[exceptions]]
+check = "implicit_state_machine"
+path = "src/mcp_github_crunchtools/tools/search.py"
+justification = "Optional API parameter builders use simple if-guards to add query params"
+
+[[exceptions]]
+check = "implicit_state_machine"
+path = "src/mcp_github_crunchtools/client.py"
+justification = "Error handling dispatches on HTTP status codes — standard pattern, not a state machine"
