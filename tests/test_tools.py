@@ -30,10 +30,10 @@ class TestToolRegistration:
             assert callable(func), f"{name} is not callable"
 
     def test_tool_count(self) -> None:
-        """Server should export exactly 11 MVP tools."""
+        """Server should export exactly 15 tools."""
         from mcp_github_crunchtools.tools import __all__
 
-        assert len(__all__) == 11
+        assert len(__all__) == 15
 
 
 class TestErrorSafety:
@@ -283,6 +283,47 @@ class TestIssueTools:
         assert result["body"] == "Thanks!"
 
     @pytest.mark.asyncio
+    async def test_create_issue(self) -> None:
+        from mcp_github_crunchtools.tools import create_issue
+
+        resp = _mock_response(
+            status_code=201,
+            json_data={
+                "number": 7,
+                "html_url": "https://github.com/o/r/issues/7",
+                "title": "Bug found",
+                "body": "details",
+            },
+        )
+
+        with _patch_client(resp) as mock_client:
+            result = await create_issue(
+                owner="o",
+                repo="r",
+                title="Bug found",
+                body="details",
+                labels=["bug"],
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["json"]["title"] == "Bug found"
+            assert call.kwargs["json"]["labels"] == ["bug"]
+
+        assert result == {
+            "number": 7,
+            "html_url": "https://github.com/o/r/issues/7",
+            "title": "Bug found",
+        }
+
+    @pytest.mark.asyncio
+    async def test_create_issue_empty_title(self) -> None:
+        from mcp_github_crunchtools.errors import ValidationError
+        from mcp_github_crunchtools.tools import create_issue
+
+        resp = _mock_response(json_data={})
+        with _patch_client(resp), pytest.raises(ValidationError):
+            await create_issue(owner="o", repo="r", title="   ")
+
+    @pytest.mark.asyncio
     async def test_invalid_state(self) -> None:
         from mcp_github_crunchtools.errors import ValidationError
         from mcp_github_crunchtools.tools import list_issues
@@ -337,25 +378,81 @@ class TestPullRequestTools:
         assert "diff --git" in result["content"]
 
     @pytest.mark.asyncio
-    async def test_get_pull_request_checks(self) -> None:
-        """Checks should combine PR head, check-runs, and commit status."""
+    async def test_checks_skipped_not_treated_as_failure(self) -> None:
+        """A passed + skipped check should yield ready_to_merge=True."""
         from mcp_github_crunchtools.tools import get_pull_request_checks
 
-        pr_resp = _mock_response(json_data={"number": 5, "head": {"sha": "deadbeef"}})
+        pr_resp = _mock_response(
+            json_data={
+                "number": 5,
+                "head": {"sha": "deadbeef"},
+                "mergeable": True,
+                "mergeable_state": "clean",
+            },
+        )
         runs_resp = _mock_response(
             json_data={
                 "total_count": 2,
                 "check_runs": [
                     {"name": "build", "status": "completed", "conclusion": "success"},
-                    {"name": "test", "status": "completed", "conclusion": "failure"},
+                    {"name": "lint", "status": "completed", "conclusion": "skipped"},
+                ],
+            },
+        )
+        status_resp = _mock_response(
+            json_data={"state": "failure", "statuses": []},
+        )
+
+        with _patch_client_sequence(pr_resp, runs_resp, status_resp):
+            result = await get_pull_request_checks(
+                owner="o", repo="r", pull_number=5
+            )
+
+        assert result["head_sha"] == "deadbeef"
+        assert result["mergeable"] is True
+        assert result["mergeable_state"] == "clean"
+        assert result["ready_to_merge"] is True
+        assert result["summary"] == {
+            "passed": 1,
+            "failing": 0,
+            "pending": 0,
+            "skipped": 1,
+        }
+        assert result["passed"] == [{"name": "build"}]
+        assert result["skipped"][0]["name"] == "lint"
+
+    @pytest.mark.asyncio
+    async def test_checks_failing_blocks_merge(self) -> None:
+        """A failing check should yield ready_to_merge=False."""
+        from mcp_github_crunchtools.tools import get_pull_request_checks
+
+        pr_resp = _mock_response(
+            json_data={
+                "number": 5,
+                "head": {"sha": "deadbeef"},
+                "mergeable": True,
+                "mergeable_state": "blocked",
+            },
+        )
+        runs_resp = _mock_response(
+            json_data={
+                "total_count": 2,
+                "check_runs": [
+                    {"name": "build", "status": "completed", "conclusion": "success"},
+                    {
+                        "name": "test",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "html_url": "https://gh/run/1",
+                    },
                 ],
             },
         )
         status_resp = _mock_response(
             json_data={
-                "state": "failure",
+                "state": "success",
                 "statuses": [
-                    {"context": "ci/legacy", "state": "success", "description": "ok"},
+                    {"context": "ci/legacy", "state": "error", "target_url": "x"},
                 ],
             },
         )
@@ -365,12 +462,78 @@ class TestPullRequestTools:
                 owner="o", repo="r", pull_number=5
             )
 
-        assert result["sha"] == "deadbeef"
-        assert result["overall_state"] == "failure"
-        assert result["total_check_runs"] == 2
-        assert len(result["check_runs"]) == 2
-        assert result["check_runs"][1]["conclusion"] == "failure"
-        assert result["statuses"][0]["context"] == "ci/legacy"
+        assert result["ready_to_merge"] is False
+        assert result["summary"]["failing"] == 2
+        assert result["failing"][0]["name"] == "test"
+        assert result["failing"][0]["url"] == "https://gh/run/1"
+        assert result["failing"][1]["name"] == "ci/legacy"
+
+
+class TestActionsTools:
+    """Tests for GitHub Actions tools."""
+
+    @pytest.mark.asyncio
+    async def test_list_workflow_runs_unwraps(self) -> None:
+        """workflow_runs should be unwrapped into a trimmed items list."""
+        from mcp_github_crunchtools.tools import list_workflow_runs
+
+        resp = _mock_response(
+            json_data={
+                "total_count": 1,
+                "workflow_runs": [
+                    {
+                        "id": 999,
+                        "name": "CI",
+                        "head_branch": "main",
+                        "event": "push",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "html_url": "https://gh/run/999",
+                        "created_at": "2026-06-14T00:00:00Z",
+                        "extra": "dropped",
+                    },
+                ],
+            },
+        )
+
+        with _patch_client(resp):
+            result = await list_workflow_runs(owner="o", repo="r")
+
+        assert result["total_count"] == 1
+        assert len(result["items"]) == 1
+        item = result["items"][0]
+        assert item["id"] == 999
+        assert item["conclusion"] == "failure"
+        assert "extra" not in item
+
+    @pytest.mark.asyncio
+    async def test_rerun_workflow_run_empty_body(self) -> None:
+        """A 201 with an empty body should yield a synthesized success dict."""
+        from mcp_github_crunchtools.tools import rerun_workflow_run
+
+        resp = _mock_response(status_code=201, text="", content_type="")
+
+        with _patch_client(resp) as mock_client:
+            result = await rerun_workflow_run(owner="o", repo="r", run_id=42)
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["method"] == "POST"
+            assert call.kwargs["url"].endswith("/actions/runs/42/rerun")
+
+        assert result == {"status": "rerun_requested", "run_id": 42}
+
+    @pytest.mark.asyncio
+    async def test_rerun_failed_jobs_empty_body(self) -> None:
+        """rerun-failed-jobs should also handle an empty 201 body."""
+        from mcp_github_crunchtools.tools import rerun_failed_jobs
+
+        resp = _mock_response(status_code=201, text="", content_type="")
+
+        with _patch_client(resp) as mock_client:
+            result = await rerun_failed_jobs(owner="o", repo="r", run_id=42)
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["url"].endswith("/actions/runs/42/rerun-failed-jobs")
+
+        assert result == {"status": "rerun_requested", "run_id": 42}
 
 
 class TestFileTools:
