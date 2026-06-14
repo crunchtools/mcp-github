@@ -10,6 +10,7 @@ from ..errors import ValidationError
 from ..models import (
     ISSUE_STATES,
     CreateIssueCommentInput,
+    CreateIssueInput,
     clamp_per_page,
     resolve_owner,
     validate_name,
@@ -85,6 +86,50 @@ async def get_issue(
 
     client = get_client()
     return await client.get(f"/repos/{owner}/{repo}/issues/{issue_number}")
+
+
+async def create_issue(
+    owner: str | None,
+    repo: str,
+    title: str,
+    body: str = "",
+    labels: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create a new issue in a repository.
+
+    Args:
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+        repo: Repository name
+        title: Issue title (required, non-empty)
+        body: Issue body (Markdown)
+        labels: Optional list of label names to apply
+
+    Returns:
+        Created issue details (number, html_url, title)
+    """
+    owner = resolve_owner(owner)
+    repo = validate_name(repo, "repo")
+    if not title or not title.strip():
+        raise ValidationError("title must not be empty")
+    validated = CreateIssueInput(title=title.strip(), body=body)
+
+    json_data: dict[str, Any] = {
+        "title": validated.title,
+        "body": validated.body,
+    }
+    if labels:
+        json_data["labels"] = labels
+
+    client = get_client()
+    result = await client.post(
+        f"/repos/{owner}/{repo}/issues",
+        json_data=json_data,
+    )
+    return {
+        "number": result.get("number"),
+        "html_url": result.get("html_url"),
+        "title": result.get("title"),
+    }
 
 
 async def create_issue_comment(

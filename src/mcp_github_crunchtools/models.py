@@ -20,6 +20,8 @@ MAX_PATH_LENGTH = 1000
 MAX_COMMENT_LENGTH = 65536
 MAX_QUERY_LENGTH = 1000
 MAX_PER_PAGE = 100
+MAX_TITLE_LENGTH = 256
+MAX_BODY_LENGTH = 65536
 
 
 def resolve_owner(owner: str | None) -> str:
@@ -110,4 +112,22 @@ class CreateIssueCommentInput(BaseModel):
         min_length=1,
         max_length=MAX_COMMENT_LENGTH,
         description="Comment body (Markdown)",
+    )
+
+
+class CreateIssueInput(BaseModel):
+    """Validated input for creating an issue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_TITLE_LENGTH,
+        description="Issue title",
+    )
+    body: str = Field(
+        default="",
+        max_length=MAX_BODY_LENGTH,
+        description="Issue body (Markdown)",
     )

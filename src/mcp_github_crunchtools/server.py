@@ -9,6 +9,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from .tools import (
+    create_issue,
     create_issue_comment,
     get_file_content,
     get_issue,
@@ -18,6 +19,9 @@ from .tools import (
     list_issues,
     list_pull_requests,
     list_repo_tree,
+    list_workflow_runs,
+    rerun_failed_jobs,
+    rerun_workflow_run,
     search_code,
     search_issues,
 )
@@ -26,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
     name="mcp-github",
-    version="0.1.0",
+    version="0.2.0",
     instructions=(
         "Secure MCP server for GitHub repositories: issues, pull requests "
         "(diffs and CI checks), repository files, and code/issue search. "
@@ -84,6 +88,31 @@ async def get_issue_tool(
         Issue details
     """
     return await get_issue(owner=owner, repo=repo, issue_number=issue_number)
+
+
+@mcp.tool()
+async def create_issue_tool(
+    repo: str,
+    title: str,
+    body: str = "",
+    labels: list[str] | None = None,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Create a new issue in a GitHub repository.
+
+    Args:
+        repo: Repository name
+        title: Issue title (required, non-empty)
+        body: Issue body (Markdown)
+        labels: Optional list of label names to apply
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        Created issue details (number, html_url, title)
+    """
+    return await create_issue(
+        owner=owner, repo=repo, title=title, body=body, labels=labels
+    )
 
 
 @mcp.tool()
@@ -184,10 +213,13 @@ async def get_pull_request_checks_tool(
     pull_number: int,
     owner: str | None = None,
 ) -> dict[str, Any]:
-    """Get a combined CI status summary for a GitHub pull request.
+    """Get a CI verdict for a PR that distinguishes skipped from failed.
 
-    Combines check-runs and the legacy commit status into one summary,
-    including the overall state and per-check conclusions.
+    Classifies every check-run and commit-status context into passed,
+    failing, pending, or skipped. SKIPPED checks are NOT failures. Use the
+    returned ``ready_to_merge`` boolean as the signal for whether the PR is
+    clear to merge (True only when nothing is failing or pending and the PR
+    is not known-unmergeable).
 
     Args:
         repo: Repository name
@@ -195,7 +227,8 @@ async def get_pull_request_checks_tool(
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
 
     Returns:
-        Summary with head SHA, overall state, and per-check conclusions
+        A verdict with head SHA, mergeability, ready_to_merge, a summary
+        count, and per-bucket check lists
     """
     return await get_pull_request_checks(
         owner=owner, repo=repo, pull_number=pull_number
@@ -286,3 +319,74 @@ async def search_issues_tool(
         Search results with total count and matched issues/PRs
     """
     return await search_issues(query=query, per_page=per_page, page=page)
+
+
+@mcp.tool()
+async def list_workflow_runs_tool(
+    repo: str,
+    owner: str | None = None,
+    branch: str | None = None,
+    status: str | None = None,
+    per_page: int = 20,
+    page: int = 1,
+) -> dict[str, Any]:
+    """List GitHub Actions workflow runs for a repository.
+
+    Args:
+        repo: Repository name
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+        branch: Filter by head branch name
+        status: Filter by status or conclusion (e.g., "completed",
+            "in_progress", "queued", "failure", "success")
+        per_page: Results per page, max 100 (default: 20)
+        page: Page number (default: 1)
+
+    Returns:
+        Trimmed list of workflow runs with total count
+    """
+    return await list_workflow_runs(
+        owner=owner,
+        repo=repo,
+        branch=branch,
+        status=status,
+        per_page=per_page,
+        page=page,
+    )
+
+
+@mcp.tool()
+async def rerun_workflow_run_tool(
+    repo: str,
+    run_id: int,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Re-run all jobs in a GitHub Actions workflow run.
+
+    Args:
+        repo: Repository name
+        run_id: Workflow run ID
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        A confirmation dict: {"status": "rerun_requested", "run_id": run_id}
+    """
+    return await rerun_workflow_run(owner=owner, repo=repo, run_id=run_id)
+
+
+@mcp.tool()
+async def rerun_failed_jobs_tool(
+    repo: str,
+    run_id: int,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Re-run only the failed jobs in a GitHub Actions workflow run.
+
+    Args:
+        repo: Repository name
+        run_id: Workflow run ID
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        A confirmation dict: {"status": "rerun_requested", "run_id": run_id}
+    """
+    return await rerun_failed_jobs(owner=owner, repo=repo, run_id=run_id)
