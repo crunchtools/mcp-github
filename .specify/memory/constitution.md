@@ -232,7 +232,30 @@ Every code change must pass through these gates in order:
 
 ---
 
-## VI. Naming Conventions
+## VI. Container Conventions
+
+- Use **Containerfile** (not Dockerfile) as the build file name.
+- Base image: **Hummingbird** (`quay.io/hummingbird/python:latest`) for minimal CVE surface.
+- Hummingbird runtime images are shell-less — use **exec-form** `RUN` (`RUN ["python", "-m", "pip", ...]`), not shell-form.
+- Always clean package caches after installs (`--no-cache-dir` for pip).
+- Required LABELs: `maintainer`, `description`.
+- Required OCI labels:
+  ```
+  org.opencontainers.image.source=https://github.com/crunchtools/mcp-github
+  org.opencontainers.image.description=Secure MCP server for GitHub issues, pull requests, checks, files, and search
+  org.opencontainers.image.licenses=AGPL-3.0-or-later
+  ```
+
+### Dual-Push CI Architecture
+
+Container CI workflows MUST use two separate jobs:
+
+1. **`build-and-push-quay`** — Builds and pushes to Quay.io. Includes Trivy security scan.
+2. **`build-and-push-ghcr`** — Builds and pushes to GHCR. Uses `needs: build-and-push-quay` dependency. Gated with `if: github.event_name != 'pull_request'`.
+
+---
+
+## VII. Naming Conventions
 
 | Context | Name |
 |---------|------|
@@ -247,7 +270,7 @@ Every code change must pass through these gates in order:
 
 ---
 
-## VII. Development Workflow
+## VIII. Development Workflow
 
 ### Adding a New Tool
 
@@ -269,7 +292,7 @@ Every code change must pass through these gates in order:
 
 ---
 
-## VIII. Governance
+## IX. Governance
 
 ### Amendment Process
 

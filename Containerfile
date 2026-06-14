@@ -36,10 +36,10 @@ COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
 # Install the package and dependencies
-RUN pip install --no-cache-dir .
+RUN ["python", "-m", "pip", "install", "--no-cache-dir", "."]
 
 # Verify installation
-RUN python -c "from mcp_github_crunchtools import main; print('Installation verified')"
+RUN ["python", "-c", "from mcp_github_crunchtools import main; print('Installation verified')"]
 
 # Default: stdio transport (use -i with podman run)
 # HTTP:    --transport streamable-http (use -d -p 8014:8014 with podman run)
