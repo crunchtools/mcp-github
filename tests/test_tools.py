@@ -596,7 +596,6 @@ class TestActionsTools:
                 owner="o", repo="r", workflow_id="build.yml"
             )
             calls = mock_client.return_value.request.call_args_list
-            # First call looks up the repo, second dispatches.
             assert calls[0].kwargs["url"].endswith("/repos/o/r")
             assert calls[1].kwargs["json"] == {"ref": "trunk"}
 

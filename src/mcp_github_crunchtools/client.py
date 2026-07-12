@@ -89,9 +89,12 @@ class GitHubClient:
             responses (such as raw diffs) are returned as {"content": text}.
 
         Raises:
-            GitHubApiError: On API errors
+            GitHubApiError: On API errors, including non-rate-limit 403s
+                (e.g. re-running a workflow run older than 30 days), whose
+                original GitHub message is preserved so callers can tell a
+                real scope problem from other 403 conditions
             RateLimitError: On rate limiting
-            PermissionDeniedError: On authorization failures
+            PermissionDeniedError: On 401 authorization failures
             NotFoundError: When the resource does not exist
         """
         client = await self._get_client()
@@ -205,11 +208,6 @@ class GitHubClient:
         if status_code == 401:
             raise PermissionDeniedError("Valid token with required scopes")
         if status_code == 403:
-            # A 403 is not always a scope problem. GitHub returns 403 for
-            # cases like "Unable to retry this workflow run because it was
-            # created over a month ago", org/SSO restrictions, and secondary
-            # rate limits. Preserve GitHub's actual (token-scrubbed) message
-            # instead of masking every 403 as permission-denied.
             raise GitHubApiError(status_code, error_msg)
         if status_code == 404:
             raise NotFoundError(error_msg)

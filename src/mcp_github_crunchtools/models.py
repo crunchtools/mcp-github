@@ -11,9 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from .config import get_config
 
 SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
-# Git refs may contain slashes (e.g. "feature/foo", "release/1.2") but must
-# not contain whitespace, control characters, ".." path traversal, or empty
-# path segments ("//"). Each slash-separated segment must be non-empty.
 SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$")
 
 ISSUE_STATES = frozenset({"open", "closed", "all"})
@@ -111,8 +108,11 @@ def clamp_per_page(per_page: int) -> int:
 def validate_ref(value: str, field: str = "ref") -> str:
     """Validate a git ref (branch or tag name).
 
-    Unlike names, refs may contain slashes (e.g. "release/1.2"), but must
-    reject whitespace, control characters, and ".." path traversal.
+    Unlike names, refs may contain slashes between non-empty segments (e.g.
+    "release/1.2"), but must reject whitespace, control characters, ".."
+    traversal, empty "//" segments, and leading/trailing "." or "/" — in
+    line with git's check-ref-format rules, so invalid refs are caught here
+    rather than as a GitHub 422.
 
     Args:
         value: The ref to validate.
@@ -122,8 +122,8 @@ def validate_ref(value: str, field: str = "ref") -> str:
         The stripped, validated ref.
 
     Raises:
-        ValueError: If the ref is empty, too long, contains disallowed
-            characters, or includes "..".
+        ValueError: If the ref is empty, too long, malformed, or contains
+            disallowed characters.
     """
     if not value or not value.strip():
         raise ValueError(f"{field} must not be empty")
