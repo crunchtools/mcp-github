@@ -30,10 +30,10 @@ class TestToolRegistration:
             assert callable(func), f"{name} is not callable"
 
     def test_tool_count(self) -> None:
-        """Server should export exactly 17 tools."""
+        """Server should export exactly 18 tools."""
         from mcp_github_crunchtools.tools import __all__
 
-        assert len(__all__) == 17
+        assert len(__all__) == 18
 
 
 class TestErrorSafety:
@@ -558,6 +558,85 @@ class TestActionsTools:
         assert "extra" not in item
 
     @pytest.mark.asyncio
+    async def test_trigger_workflow_explicit_ref(self) -> None:
+        """Dispatch posts to the workflow's dispatches endpoint with the ref."""
+        from mcp_github_crunchtools.tools import trigger_workflow
+
+        resp = _mock_response(status_code=204, text="", content_type="")
+
+        with _patch_client(resp) as mock_client:
+            result = await trigger_workflow(
+                owner="o", repo="r", workflow_id="build.yml", ref="main"
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["method"] == "POST"
+            assert call.kwargs["url"].endswith(
+                "/actions/workflows/build.yml/dispatches"
+            )
+            assert call.kwargs["json"] == {"ref": "main"}
+
+        assert result == {
+            "status": "dispatch_requested",
+            "workflow": "build.yml",
+            "ref": "main",
+        }
+
+    @pytest.mark.asyncio
+    async def test_trigger_workflow_defaults_to_default_branch(self) -> None:
+        """When ref is omitted, it is fetched from the repo's default_branch."""
+        from mcp_github_crunchtools.tools import trigger_workflow
+
+        repo_resp = _mock_response(
+            status_code=200, json_data={"default_branch": "trunk"}
+        )
+        dispatch_resp = _mock_response(status_code=204, text="", content_type="")
+
+        with _patch_client_sequence(repo_resp, dispatch_resp) as mock_client:
+            result = await trigger_workflow(
+                owner="o", repo="r", workflow_id="build.yml"
+            )
+            calls = mock_client.return_value.request.call_args_list
+            assert calls[0].kwargs["url"].endswith("/repos/o/r")
+            assert calls[1].kwargs["json"] == {"ref": "trunk"}
+
+        assert result["ref"] == "trunk"
+
+    @pytest.mark.asyncio
+    async def test_trigger_workflow_passes_inputs(self) -> None:
+        """Provided inputs are forwarded in the dispatch body."""
+        from mcp_github_crunchtools.tools import trigger_workflow
+
+        resp = _mock_response(status_code=204, text="", content_type="")
+
+        with _patch_client(resp) as mock_client:
+            await trigger_workflow(
+                owner="o",
+                repo="r",
+                workflow_id="build.yml",
+                ref="main",
+                inputs={"reason": "cve-refresh"},
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["json"] == {
+                "ref": "main",
+                "inputs": {"reason": "cve-refresh"},
+            }
+
+    @pytest.mark.asyncio
+    async def test_trigger_workflow_rejects_bad_ref(self) -> None:
+        """A ref containing path traversal is rejected before any API call."""
+        from mcp_github_crunchtools.tools import trigger_workflow
+
+        resp = _mock_response(status_code=204, text="", content_type="")
+
+        with _patch_client(resp), pytest.raises(
+            ValueError, match="not a valid git ref"
+        ):
+            await trigger_workflow(
+                owner="o", repo="r", workflow_id="build.yml", ref="../evil"
+            )
+
+    @pytest.mark.asyncio
     async def test_rerun_workflow_run_empty_body(self) -> None:
         """A 201 with an empty body should yield a synthesized success dict."""
         from mcp_github_crunchtools.tools import rerun_workflow_run
@@ -759,19 +838,30 @@ class TestClientErrorHandling:
             await get_issue(owner="o", repo="r", issue_number=1)
 
     @pytest.mark.asyncio
-    async def test_403_permission_denied_when_not_rate_limited(self) -> None:
-        """403 without rate-limit signal should raise PermissionDeniedError."""
-        from mcp_github_crunchtools.errors import PermissionDeniedError
-        from mcp_github_crunchtools.tools import get_issue
+    async def test_403_preserves_github_message_when_not_rate_limited(
+        self,
+    ) -> None:
+        """A non-rate-limit 403 preserves GitHub's message, not a generic
+        permission-denied. This is what lets callers distinguish a real
+        scope problem from e.g. the 30-day workflow-rerun limit."""
+        from mcp_github_crunchtools.errors import GitHubApiError
+        from mcp_github_crunchtools.tools import rerun_workflow_run
 
         resp = _mock_response(
             status_code=403,
-            json_data={"message": "Forbidden"},
+            json_data={
+                "message": (
+                    "Unable to retry this workflow run because it was "
+                    "created over a month ago"
+                )
+            },
             headers={"x-ratelimit-remaining": "42"},
         )
 
-        with _patch_client(resp), pytest.raises(PermissionDeniedError):
-            await get_issue(owner="o", repo="r", issue_number=1)
+        with _patch_client(resp), pytest.raises(GitHubApiError) as exc_info:
+            await rerun_workflow_run(owner="o", repo="r", run_id=1)
+
+        assert "created over a month ago" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_429_rate_limit(self) -> None:

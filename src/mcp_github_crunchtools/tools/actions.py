@@ -1,6 +1,7 @@
 """GitHub Actions tools.
 
-Tools for listing workflow runs and re-running CI on GitHub Actions.
+Tools for listing workflow runs, triggering fresh runs, and re-running CI
+on GitHub Actions.
 """
 
 from typing import Any
@@ -11,6 +12,8 @@ from ..models import (
     resolve_owner,
     validate_name,
     validate_positive_int,
+    validate_ref,
+    validate_workflow_inputs,
 )
 
 
@@ -74,12 +77,67 @@ async def list_workflow_runs(
     }
 
 
+async def trigger_workflow(
+    owner: str | None,
+    repo: str,
+    workflow_id: str,
+    ref: str | None = None,
+    inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Trigger a fresh GitHub Actions run via the workflow_dispatch event.
+
+    Unlike ``rerun_workflow_run`` (which re-runs an *existing* run and is
+    rejected by GitHub with a 403 for runs created more than 30 days ago),
+    this dispatches a brand-new run, so it works no matter how long ago the
+    workflow last ran. The target workflow's YAML must declare an
+    ``on: workflow_dispatch`` trigger.
+
+    Args:
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+        repo: Repository name
+        workflow_id: Workflow file name (e.g. "build.yml") or its numeric ID
+        ref: Git ref (branch or tag) to run on. Defaults to the
+            repository's default branch when omitted.
+        inputs: Optional workflow_dispatch inputs as name/value pairs
+
+    Returns:
+        A confirmation dict:
+        {"status": "dispatch_requested", "workflow": ..., "ref": ...}
+    """
+    owner = resolve_owner(owner)
+    repo = validate_name(repo, "repo")
+    workflow_id = validate_name(workflow_id, "workflow_id")
+
+    client = get_client()
+
+    if ref is None or not ref.strip():
+        repo_info = await client.get(f"/repos/{owner}/{repo}")
+        ref = repo_info.get("default_branch", "main")
+    ref = validate_ref(ref)
+
+    body: dict[str, Any] = {"ref": ref}
+    if inputs:
+        body["inputs"] = validate_workflow_inputs(inputs)
+
+    await client.post(
+        f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches",
+        json_data=body,
+    )
+    return {"status": "dispatch_requested", "workflow": workflow_id, "ref": ref}
+
+
 async def rerun_workflow_run(
     owner: str | None,
     repo: str,
     run_id: int,
 ) -> dict[str, Any]:
     """Re-run all jobs in a GitHub Actions workflow run.
+
+    GitHub rejects re-runs of runs created more than 30 days ago with a 403
+    ("Unable to retry this workflow run because it was created over a month
+    ago"). That is NOT a permission problem: it surfaces as a GitHubApiError
+    carrying GitHub's message, not a PermissionDeniedError (which is reserved
+    for 401). To force a fresh build regardless of age, use trigger_workflow.
 
     Args:
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
@@ -104,6 +162,11 @@ async def rerun_failed_jobs(
     run_id: int,
 ) -> dict[str, Any]:
     """Re-run only the failed jobs in a GitHub Actions workflow run.
+
+    As with rerun_workflow_run, GitHub rejects re-runs of runs older than 30
+    days with a 403 that surfaces as a GitHubApiError (GitHub's message
+    preserved), not a PermissionDeniedError. Use trigger_workflow to force a
+    fresh build regardless of age.
 
     Args:
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)

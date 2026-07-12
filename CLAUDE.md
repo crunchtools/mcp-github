@@ -46,16 +46,21 @@ claude mcp add mcp-github-crunchtools \
 | `SSL_CERT_FILE` | No | — | Custom CA bundle for self-hosted instances |
 | `GITHUB_SSL_VERIFY` | No | `true` | Set `false` to disable SSL verification |
 
-## Available Tools (11)
+## Available Tools (18)
 
 | Category | Tools |
 |----------|-------|
-| Issues | `list_issues_tool`, `get_issue_tool`, `create_issue_comment_tool` |
-| Pull Requests | `list_pull_requests_tool`, `get_pull_request_tool`, `get_pull_request_diff_tool`, `get_pull_request_checks_tool` |
+| Issues | `list_issues_tool`, `get_issue_tool`, `create_issue_tool`, `create_issue_comment_tool`, `update_issue_tool` |
+| Pull Requests | `list_pull_requests_tool`, `get_pull_request_tool`, `get_pull_request_diff_tool`, `get_pull_request_checks_tool`, `update_pull_request_tool` |
 | Files | `get_file_content_tool`, `list_repo_tree_tool` |
 | Search | `search_code_tool`, `search_issues_tool` |
+| Actions | `list_workflow_runs_tool`, `trigger_workflow_tool`, `rerun_workflow_run_tool`, `rerun_failed_jobs_tool` |
 
-`create_issue_comment_tool` is the only write tool; the gateway scopes it.
+Write tools (`create_issue*`, `update_*`, `trigger_workflow_tool`, `rerun_*`)
+are scoped per-profile by the gateway. `trigger_workflow_tool` dispatches a
+fresh run (via `workflow_dispatch`) and is the way to *force* a build —
+`rerun_*` only re-run an existing run and GitHub rejects runs older than 30
+days.
 
 ## Example Usage
 

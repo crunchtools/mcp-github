@@ -24,6 +24,7 @@ from .tools import (
     rerun_workflow_run,
     search_code,
     search_issues,
+    trigger_workflow,
     update_issue,
     update_pull_request,
 )
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
     name="mcp-github",
-    version="0.2.0",
+    version="0.4.0",
     instructions=(
         "Secure MCP server for GitHub repositories: issues, pull requests "
         "(diffs and CI checks), repository files, and code/issue search. "
@@ -428,6 +429,42 @@ async def list_workflow_runs_tool(
         status=status,
         per_page=per_page,
         page=page,
+    )
+
+
+@mcp.tool()
+async def trigger_workflow_tool(
+    repo: str,
+    workflow_id: str,
+    ref: str | None = None,
+    inputs: dict[str, Any] | None = None,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Trigger a fresh GitHub Actions run via the workflow_dispatch event.
+
+    Use this to force a new build. Unlike rerun_workflow_run_tool (which
+    re-runs an existing run and is rejected by GitHub for runs older than 30
+    days), this starts a brand-new run regardless of when the workflow last
+    ran. The target workflow must declare an ``on: workflow_dispatch`` trigger.
+
+    Args:
+        repo: Repository name
+        workflow_id: Workflow file name (e.g. "build.yml") or its numeric ID
+        ref: Git ref (branch or tag) to run on (default: the repo's
+            default branch)
+        inputs: Optional workflow_dispatch inputs as name/value pairs
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        A confirmation dict:
+        {"status": "dispatch_requested", "workflow": ..., "ref": ...}
+    """
+    return await trigger_workflow(
+        owner=owner,
+        repo=repo,
+        workflow_id=workflow_id,
+        ref=ref,
+        inputs=inputs,
     )
 
 
