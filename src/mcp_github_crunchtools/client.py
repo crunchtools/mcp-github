@@ -202,8 +202,15 @@ class GitHubClient:
                 retry_after = response.headers.get("x-ratelimit-reset")
             raise RateLimitError(int(retry_after) if retry_after else None)
 
-        if status_code in (401, 403):
+        if status_code == 401:
             raise PermissionDeniedError("Valid token with required scopes")
+        if status_code == 403:
+            # A 403 is not always a scope problem. GitHub returns 403 for
+            # cases like "Unable to retry this workflow run because it was
+            # created over a month ago", org/SSO restrictions, and secondary
+            # rate limits. Preserve GitHub's actual (token-scrubbed) message
+            # instead of masking every 403 as permission-denied.
+            raise GitHubApiError(status_code, error_msg)
         if status_code == 404:
             raise NotFoundError(error_msg)
 

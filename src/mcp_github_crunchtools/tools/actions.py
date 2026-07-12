@@ -1,6 +1,7 @@
 """GitHub Actions tools.
 
-Tools for listing workflow runs and re-running CI on GitHub Actions.
+Tools for listing workflow runs, triggering fresh runs, and re-running CI
+on GitHub Actions.
 """
 
 from typing import Any
@@ -11,6 +12,8 @@ from ..models import (
     resolve_owner,
     validate_name,
     validate_positive_int,
+    validate_ref,
+    validate_workflow_inputs,
 )
 
 
@@ -72,6 +75,55 @@ async def list_workflow_runs(
         "total_count": result.get("total_count", len(items)),
         "items": items,
     }
+
+
+async def trigger_workflow(
+    owner: str | None,
+    repo: str,
+    workflow_id: str,
+    ref: str | None = None,
+    inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Trigger a fresh GitHub Actions run via the workflow_dispatch event.
+
+    Unlike ``rerun_workflow_run`` (which re-runs an *existing* run and is
+    rejected by GitHub with a 403 for runs created more than 30 days ago),
+    this dispatches a brand-new run, so it works no matter how long ago the
+    workflow last ran. The target workflow's YAML must declare an
+    ``on: workflow_dispatch`` trigger.
+
+    Args:
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+        repo: Repository name
+        workflow_id: Workflow file name (e.g. "build.yml") or its numeric ID
+        ref: Git ref (branch or tag) to run on. Defaults to the
+            repository's default branch when omitted.
+        inputs: Optional workflow_dispatch inputs as name/value pairs
+
+    Returns:
+        A confirmation dict:
+        {"status": "dispatch_requested", "workflow": ..., "ref": ...}
+    """
+    owner = resolve_owner(owner)
+    repo = validate_name(repo, "repo")
+    workflow_id = validate_name(workflow_id, "workflow_id")
+
+    client = get_client()
+
+    if ref is None or not ref.strip():
+        repo_info = await client.get(f"/repos/{owner}/{repo}")
+        ref = repo_info.get("default_branch", "main")
+    ref = validate_ref(ref)
+
+    body: dict[str, Any] = {"ref": ref}
+    if inputs:
+        body["inputs"] = validate_workflow_inputs(inputs)
+
+    await client.post(
+        f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches",
+        json_data=body,
+    )
+    return {"status": "dispatch_requested", "workflow": workflow_id, "ref": ref}
 
 
 async def rerun_workflow_run(

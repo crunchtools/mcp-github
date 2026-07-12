@@ -11,6 +11,8 @@ from mcp_github_crunchtools.models import (
     resolve_owner,
     validate_name,
     validate_positive_int,
+    validate_ref,
+    validate_workflow_inputs,
 )
 
 
@@ -37,6 +39,55 @@ class TestValidateName:
     def test_injection_shell(self) -> None:
         with pytest.raises(ValueError, match="only letters"):
             validate_name("repo$(whoami)", "repo")
+
+
+class TestValidateRef:
+    """Tests for git ref validation."""
+
+    def test_simple_branch(self) -> None:
+        assert validate_ref("main") == "main"
+
+    def test_slash_allowed(self) -> None:
+        assert validate_ref("release/1.2") == "release/1.2"
+
+    def test_strips_whitespace(self) -> None:
+        assert validate_ref("  main  ") == "main"
+
+    def test_empty(self) -> None:
+        with pytest.raises(ValueError, match="must not be empty"):
+            validate_ref("")
+
+    def test_path_traversal(self) -> None:
+        with pytest.raises(ValueError, match="not a valid git ref"):
+            validate_ref("../evil")
+
+    def test_leading_slash(self) -> None:
+        with pytest.raises(ValueError, match="not a valid git ref"):
+            validate_ref("/main")
+
+    def test_shell_injection(self) -> None:
+        with pytest.raises(ValueError, match="only letters"):
+            validate_ref("main;rm -rf")
+
+
+class TestValidateWorkflowInputs:
+    """Tests for workflow_dispatch input validation."""
+
+    def test_valid_primitives(self) -> None:
+        inputs = {"reason": "cve", "count": 3, "force": True}
+        assert validate_workflow_inputs(inputs) == inputs
+
+    def test_bad_key_rejected(self) -> None:
+        with pytest.raises(ValueError, match="only letters"):
+            validate_workflow_inputs({"bad key": "x"})
+
+    def test_non_primitive_value_rejected(self) -> None:
+        with pytest.raises(ValueError, match="string, number, or boolean"):
+            validate_workflow_inputs({"nested": {"a": 1}})
+
+    def test_too_many_inputs(self) -> None:
+        with pytest.raises(ValueError, match="may not exceed"):
+            validate_workflow_inputs({f"k{i}": "v" for i in range(33)})
 
 
 class TestResolveOwner:

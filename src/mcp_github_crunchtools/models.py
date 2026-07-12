@@ -11,6 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from .config import get_config
 
 SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+# Git refs may contain slashes (e.g. "feature/foo", "release/1.2") but must
+# not contain whitespace, control characters, or ".." path traversal.
+SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 ISSUE_STATES = frozenset({"open", "closed", "all"})
 PR_STATES = frozenset({"open", "closed", "all"})
@@ -22,6 +25,8 @@ MAX_QUERY_LENGTH = 1000
 MAX_PER_PAGE = 100
 MAX_TITLE_LENGTH = 256
 MAX_BODY_LENGTH = 65536
+MAX_REF_LENGTH = 255
+MAX_WORKFLOW_INPUTS = 32
 
 
 def resolve_owner(owner: str | None) -> str:
@@ -100,6 +105,76 @@ def validate_positive_int(value: int, field: str) -> int:
 def clamp_per_page(per_page: int) -> int:
     """Clamp per_page to GitHub's allowed range (1-100)."""
     return max(1, min(per_page, MAX_PER_PAGE))
+
+
+def validate_ref(value: str, field: str = "ref") -> str:
+    """Validate a git ref (branch or tag name).
+
+    Unlike names, refs may contain slashes (e.g. "release/1.2"), but must
+    reject whitespace, control characters, and ".." path traversal.
+
+    Args:
+        value: The ref to validate.
+        field: Field name for error messages.
+
+    Returns:
+        The stripped, validated ref.
+
+    Raises:
+        ValueError: If the ref is empty, too long, contains disallowed
+            characters, or includes "..".
+    """
+    if not value or not value.strip():
+        raise ValueError(f"{field} must not be empty")
+
+    value = value.strip()
+
+    if len(value) > MAX_REF_LENGTH:
+        raise ValueError(f"{field} is too long")
+
+    if ".." in value or value.startswith("/") or value.endswith("/"):
+        raise ValueError(f"{field} is not a valid git ref")
+
+    if not SAFE_REF_PATTERN.match(value):
+        raise ValueError(
+            f"{field} must contain only letters, digits, dots, hyphens, "
+            "underscores, and slashes"
+        )
+
+    return value
+
+
+def validate_workflow_inputs(inputs: dict[str, object]) -> dict[str, object]:
+    """Validate workflow_dispatch inputs before sending them to GitHub.
+
+    Args:
+        inputs: Mapping of input name to a primitive value.
+
+    Returns:
+        The validated inputs mapping.
+
+    Raises:
+        ValueError: If there are too many inputs, a key is not a safe name,
+            or a value is not a string, number, or boolean.
+    """
+    is_mapping = isinstance(inputs, dict)
+    if not is_mapping:
+        raise ValueError("inputs must be an object of name/value pairs")
+
+    if len(inputs) > MAX_WORKFLOW_INPUTS:
+        raise ValueError(
+            f"inputs may not exceed {MAX_WORKFLOW_INPUTS} entries"
+        )
+
+    for key, value in inputs.items():
+        validate_name(key, "inputs key")
+        is_primitive = isinstance(value, (str, int, float, bool))
+        if not is_primitive:
+            raise ValueError(
+                f"inputs value for '{key}' must be a string, number, or boolean"
+            )
+
+    return inputs
 
 
 class CreateIssueCommentInput(BaseModel):

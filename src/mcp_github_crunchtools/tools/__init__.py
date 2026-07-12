@@ -7,6 +7,7 @@ from .actions import (
     list_workflow_runs,
     rerun_failed_jobs,
     rerun_workflow_run,
+    trigger_workflow,
 )
 from .files import get_file_content, list_repo_tree
 from .issues import (
@@ -41,6 +42,7 @@ __all__ = [
     "search_code",
     "search_issues",
     "list_workflow_runs",
+    "trigger_workflow",
     "rerun_workflow_run",
     "rerun_failed_jobs",
 ]
