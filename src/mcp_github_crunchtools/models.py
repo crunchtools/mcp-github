@@ -12,8 +12,9 @@ from .config import get_config
 
 SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 # Git refs may contain slashes (e.g. "feature/foo", "release/1.2") but must
-# not contain whitespace, control characters, or ".." path traversal.
-SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9._/-]+$")
+# not contain whitespace, control characters, ".." path traversal, or empty
+# path segments ("//"). Each slash-separated segment must be non-empty.
+SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$")
 
 ISSUE_STATES = frozenset({"open", "closed", "all"})
 PR_STATES = frozenset({"open", "closed", "all"})
@@ -132,7 +133,13 @@ def validate_ref(value: str, field: str = "ref") -> str:
     if len(value) > MAX_REF_LENGTH:
         raise ValueError(f"{field} is too long")
 
-    if ".." in value or value.startswith("/") or value.endswith("/"):
+    if (
+        ".." in value
+        or "//" in value
+        or "./" in value
+        or value.startswith((".", "/"))
+        or value.endswith((".", "/"))
+    ):
         raise ValueError(f"{field} is not a valid git ref")
 
     if not SAFE_REF_PATTERN.match(value):

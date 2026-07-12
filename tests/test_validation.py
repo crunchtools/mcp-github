@@ -61,6 +61,18 @@ class TestValidateRef:
         with pytest.raises(ValueError, match="not a valid git ref"):
             validate_ref("../evil")
 
+    def test_double_slash(self) -> None:
+        with pytest.raises(ValueError, match="not a valid git ref"):
+            validate_ref("feature//branch")
+
+    def test_dot_slash(self) -> None:
+        with pytest.raises(ValueError, match="not a valid git ref"):
+            validate_ref("./branch")
+
+    def test_leading_dot(self) -> None:
+        with pytest.raises(ValueError, match="not a valid git ref"):
+            validate_ref(".hidden")
+
     def test_leading_slash(self) -> None:
         with pytest.raises(ValueError, match="not a valid git ref"):
             validate_ref("/main")
