@@ -133,6 +133,12 @@ async def rerun_workflow_run(
 ) -> dict[str, Any]:
     """Re-run all jobs in a GitHub Actions workflow run.
 
+    GitHub rejects re-runs of runs created more than 30 days ago with a 403
+    ("Unable to retry this workflow run because it was created over a month
+    ago"). That is NOT a permission problem: it surfaces as a GitHubApiError
+    carrying GitHub's message, not a PermissionDeniedError (which is reserved
+    for 401). To force a fresh build regardless of age, use trigger_workflow.
+
     Args:
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
         repo: Repository name
@@ -156,6 +162,11 @@ async def rerun_failed_jobs(
     run_id: int,
 ) -> dict[str, Any]:
     """Re-run only the failed jobs in a GitHub Actions workflow run.
+
+    As with rerun_workflow_run, GitHub rejects re-runs of runs older than 30
+    days with a 403 that surfaces as a GitHubApiError (GitHub's message
+    preserved), not a PermissionDeniedError. Use trigger_workflow to force a
+    fresh build regardless of age.
 
     Args:
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
