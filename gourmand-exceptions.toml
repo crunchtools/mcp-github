@@ -54,3 +54,13 @@ justification = "Optional API parameter builders use simple if-guards to add que
 check = "implicit_state_machine"
 path = "src/mcp_github_crunchtools/client.py"
 justification = "Error handling dispatches on HTTP status codes — standard pattern, not a state machine"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/mcp_github_crunchtools/models.py"
+justification = "validate_name, validate_ref and validate_workflow_inputs apply different patterns and limits to different inputs. They share the pattern-match-then-raise shape, which is three statements."
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/mcp_github_crunchtools/client.py"
+justification = "get_client and get_config are both the four-line lazy-singleton accessor: check the module global, construct if None, return. The duplication is the idiom; hiding it behind a generic obscures which global is being initialised."
