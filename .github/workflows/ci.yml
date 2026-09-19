@@ -40,15 +40,7 @@ jobs:
 
   gourmand:
     name: Code Quality (Gourmand)
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run Gourmand (AI slop detection)
-        run: |
-          docker run --rm -v "${{ github.workspace }}":/repo \
-            quay.io/crunchtools/gourmand:latest --full /repo
+    uses: crunchtools/gatehouse/.github/workflows/gourmand.yml@v0.5.0
 
   build-container:
     runs-on: ubuntu-latest
