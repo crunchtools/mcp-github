@@ -5,6 +5,7 @@ Integration tests with a real GitHub account should be run separately.
 """
 
 import base64
+import os
 
 import pytest
 
@@ -41,8 +42,6 @@ class TestErrorSafety:
 
     def test_github_api_error_sanitizes_token(self) -> None:
         """GitHubApiError should sanitize tokens from messages."""
-        import os
-
         from mcp_github_crunchtools.errors import GitHubApiError
 
         os.environ["GITHUB_TOKEN"] = "ghp_secret_token_12345"
@@ -70,8 +69,6 @@ class TestConfigSafety:
     """Tests for configuration security."""
 
     def test_config_repr_hides_token(self) -> None:
-        import os
-
         os.environ["GITHUB_TOKEN"] = "ghp_secret_test_token"
 
         try:
@@ -85,8 +82,6 @@ class TestConfigSafety:
             del os.environ["GITHUB_TOKEN"]
 
     def test_config_requires_token(self) -> None:
-        import os
-
         from mcp_github_crunchtools.config import Config
         from mcp_github_crunchtools.errors import ConfigurationError
 
@@ -100,8 +95,6 @@ class TestConfigSafety:
                 os.environ["GITHUB_TOKEN"] = token
 
     def test_config_default_api_url(self) -> None:
-        import os
-
         os.environ["GITHUB_TOKEN"] = "ghp_test"
         os.environ.pop("GITHUB_API_URL", None)
 
@@ -114,8 +107,6 @@ class TestConfigSafety:
             del os.environ["GITHUB_TOKEN"]
 
     def test_config_ghes_api_url(self) -> None:
-        import os
-
         os.environ["GITHUB_TOKEN"] = "ghp_test"
         os.environ["GITHUB_API_URL"] = "https://ghe.example.com/api/v3"
 
@@ -129,8 +120,6 @@ class TestConfigSafety:
             del os.environ["GITHUB_API_URL"]
 
     def test_config_rejects_http(self) -> None:
-        import os
-
         from mcp_github_crunchtools.config import Config
         from mcp_github_crunchtools.errors import ConfigurationError
 
@@ -145,8 +134,6 @@ class TestConfigSafety:
             del os.environ["GITHUB_API_URL"]
 
     def test_config_default_org(self) -> None:
-        import os
-
         os.environ["GITHUB_TOKEN"] = "ghp_test"
         os.environ["GITHUB_DEFAULT_ORG"] = "crunchtools"
 
@@ -160,8 +147,6 @@ class TestConfigSafety:
             del os.environ["GITHUB_DEFAULT_ORG"]
 
     def test_config_ssl_verify_default(self) -> None:
-        import os
-
         os.environ["GITHUB_TOKEN"] = "ghp_test"
         os.environ.pop("GITHUB_SSL_VERIFY", None)
         os.environ.pop("SSL_CERT_FILE", None)
@@ -181,8 +166,6 @@ class TestClientHeadersAndAuth:
     @pytest.mark.asyncio
     async def test_bearer_auth_header(self) -> None:
         """Client should set a Bearer Authorization header."""
-        import os
-
         from mcp_github_crunchtools.client import get_client
 
         os.environ["GITHUB_TOKEN"] = "ghp_header_test"

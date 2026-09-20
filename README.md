@@ -6,7 +6,7 @@ A secure MCP (Model Context Protocol) server for GitHub issues, pull requests, r
 
 This MCP server is designed to be:
 
-- **Secure by default** - Comprehensive input validation and token protection
+- **Secure by default** - STRIDE threat model (see [SECURITY.md](SECURITY.md)), Pydantic input validation, and the API token held as a `SecretStr` to prevent accidental logging
 - **No third-party services** - Runs locally via stdio, your API token never leaves your machine
 - **Multi-instance** - Works with github.com or GitHub Enterprise Server via configurable API URL
 - **Cross-platform** - Works on Linux, macOS, and Windows
@@ -83,6 +83,8 @@ podman run -e GITHUB_TOKEN=your_token \
 | `GITHUB_TOKEN` | Yes | — | GitHub Personal Access Token |
 | `GITHUB_API_URL` | No | `https://api.github.com` | API base URL (set for GHES) |
 | `GITHUB_DEFAULT_ORG` | No | — | Default owner when a tool omits `owner` |
+| `SSL_CERT_FILE` | No | — | Custom CA bundle path, for self-hosted GHES with an internal CA |
+| `GITHUB_SSL_VERIFY` | No | `true` | Set `false` to disable TLS verification (not recommended) |
 
 ### Creating a GitHub Personal Access Token
 
