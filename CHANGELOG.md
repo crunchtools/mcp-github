@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet. This project has not cut a tagged release; changes since the repo
-was created are not recorded here. Entries accrue from 2026-09-19 forward
-(RT #1484).
+## [1.0.0] - 2026-09-20
+
+First tagged release. This image has been running in production since before
+it had version control. No changes are recorded prior to this point --
+RT #1484 added this file on 2026-09-19, before this repo's first tag.
