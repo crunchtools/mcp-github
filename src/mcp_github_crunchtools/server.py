@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
     name="mcp-github",
-    version="0.4.0",
+    version="1.0.1",
     instructions=(
         "Secure MCP server for GitHub repositories: issues, pull requests "
         "(diffs and CI checks), repository files, and code/issue search. "
@@ -113,9 +113,7 @@ async def create_issue_tool(
     Returns:
         Created issue details (number, html_url, title)
     """
-    return await create_issue(
-        owner=owner, repo=repo, title=title, body=body, labels=labels
-    )
+    return await create_issue(owner=owner, repo=repo, title=title, body=body, labels=labels)
 
 
 @mcp.tool()
@@ -136,9 +134,7 @@ async def create_issue_comment_tool(
     Returns:
         Created comment details
     """
-    return await create_issue_comment(
-        owner=owner, repo=repo, issue_number=issue_number, body=body
-    )
+    return await create_issue_comment(owner=owner, repo=repo, issue_number=issue_number, body=body)
 
 
 @mcp.tool()
@@ -246,9 +242,7 @@ async def get_pull_request_diff_tool(
     Returns:
         Dictionary with the diff text under the "content" key
     """
-    return await get_pull_request_diff(
-        owner=owner, repo=repo, pull_number=pull_number
-    )
+    return await get_pull_request_diff(owner=owner, repo=repo, pull_number=pull_number)
 
 
 @mcp.tool()
@@ -274,9 +268,7 @@ async def get_pull_request_checks_tool(
         A verdict with head SHA, mergeability, ready_to_merge, a summary
         count, and per-bucket check lists
     """
-    return await get_pull_request_checks(
-        owner=owner, repo=repo, pull_number=pull_number
-    )
+    return await get_pull_request_checks(owner=owner, repo=repo, pull_number=pull_number)
 
 
 @mcp.tool()
@@ -352,9 +344,7 @@ async def list_repo_tree_tool(
     Returns:
         Tree listing with entries and a truncation flag
     """
-    return await list_repo_tree(
-        owner=owner, repo=repo, tree_sha=tree_sha, recursive=recursive
-    )
+    return await list_repo_tree(owner=owner, repo=repo, tree_sha=tree_sha, recursive=recursive)
 
 
 @mcp.tool()
