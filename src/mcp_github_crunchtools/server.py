@@ -31,9 +31,13 @@ from .tools import (
 
 logger = logging.getLogger(__name__)
 
+# A gateway drops an invalid optional argument only on a tool annotated read-only;
+# on anything else it refuses the call. Only tools that change nothing on GitHub get this.
+READ_ONLY = {"readOnlyHint": True}
+
 mcp = FastMCP(
     name="mcp-github",
-    version="1.0.1",
+    version="1.1.0",
     instructions=(
         "Secure MCP server for GitHub repositories: issues, pull requests "
         "(diffs and CI checks), repository files, and code/issue search. "
@@ -42,7 +46,7 @@ mcp = FastMCP(
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_issues_tool(
     repo: str,
     owner: str | None = None,
@@ -74,7 +78,7 @@ async def list_issues_tool(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def get_issue_tool(
     repo: str,
     issue_number: int,
@@ -178,7 +182,7 @@ async def update_issue_tool(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_pull_requests_tool(
     repo: str,
     owner: str | None = None,
@@ -207,7 +211,7 @@ async def list_pull_requests_tool(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def get_pull_request_tool(
     repo: str,
     pull_number: int,
@@ -226,7 +230,7 @@ async def get_pull_request_tool(
     return await get_pull_request(owner=owner, repo=repo, pull_number=pull_number)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def get_pull_request_diff_tool(
     repo: str,
     pull_number: int,
@@ -245,7 +249,7 @@ async def get_pull_request_diff_tool(
     return await get_pull_request_diff(owner=owner, repo=repo, pull_number=pull_number)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def get_pull_request_checks_tool(
     repo: str,
     pull_number: int,
@@ -305,7 +309,7 @@ async def update_pull_request_tool(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def get_file_content_tool(
     repo: str,
     path: str,
@@ -326,7 +330,7 @@ async def get_file_content_tool(
     return await get_file_content(owner=owner, repo=repo, path=path, ref=ref)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_repo_tree_tool(
     repo: str,
     owner: str | None = None,
@@ -347,7 +351,7 @@ async def list_repo_tree_tool(
     return await list_repo_tree(owner=owner, repo=repo, tree_sha=tree_sha, recursive=recursive)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def search_code_tool(
     query: str,
     per_page: int = 30,
@@ -368,7 +372,7 @@ async def search_code_tool(
     return await search_code(query=query, per_page=per_page, page=page)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def search_issues_tool(
     query: str,
     per_page: int = 30,
@@ -389,7 +393,7 @@ async def search_issues_tool(
     return await search_issues(query=query, per_page=per_page, page=page)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_workflow_runs_tool(
     repo: str,
     owner: str | None = None,

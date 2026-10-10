@@ -1,6 +1,6 @@
 [project]
 name = "mcp-github-crunchtools"
-version = "1.0.1"
+version = "1.1.0"
 description = "Secure MCP server for GitHub issues, pull requests, files, and search"
 requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"

@@ -37,6 +37,105 @@ class TestToolRegistration:
         assert len(__all__) == 18
 
 
+READ_ONLY = frozenset(
+    {
+        "list_issues_tool",
+        "get_issue_tool",
+        "list_pull_requests_tool",
+        "get_pull_request_tool",
+        "get_pull_request_diff_tool",
+        "get_pull_request_checks_tool",
+        "get_file_content_tool",
+        "list_repo_tree_tool",
+        "search_code_tool",
+        "search_issues_tool",
+        "list_workflow_runs_tool",
+    }
+)
+WRITES = frozenset(
+    {
+        "create_issue_tool",
+        "create_issue_comment_tool",
+        "update_issue_tool",
+        "update_pull_request_tool",
+        "trigger_workflow_tool",
+        "rerun_workflow_run_tool",
+        "rerun_failed_jobs_tool",
+    }
+)
+
+# Arguments that satisfy each read-only tool's required parameters.
+READ_ONLY_CALLS: dict[str, dict[str, object]] = {
+    "list_issues_tool": {"owner": "o", "repo": "r"},
+    "get_issue_tool": {"owner": "o", "repo": "r", "issue_number": 1},
+    "list_pull_requests_tool": {"owner": "o", "repo": "r"},
+    "get_pull_request_tool": {"owner": "o", "repo": "r", "pull_number": 1},
+    "get_pull_request_diff_tool": {"owner": "o", "repo": "r", "pull_number": 1},
+    "get_pull_request_checks_tool": {"owner": "o", "repo": "r", "pull_number": 1},
+    "get_file_content_tool": {"owner": "o", "repo": "r", "path": "README.md"},
+    "list_repo_tree_tool": {"owner": "o", "repo": "r"},
+    "search_code_tool": {"query": "FastMCP repo:o/r"},
+    "search_issues_tool": {"query": "is:open repo:o/r"},
+    "list_workflow_runs_tool": {"owner": "o", "repo": "r"},
+}
+
+# Methods a read-only tool may send. Every read here is a plain REST GET, so
+# there is no allowlist of POST reads (no GraphQL, and search is GET /search/*).
+READ_METHODS = frozenset({"GET", "HEAD"})
+
+# One body that every read-only tool can parse: a PR with a head SHA, a
+# base64 file, and the empty collections the list and search tools unwrap.
+READ_BODY = {
+    "head": {"sha": "abc123"},
+    "content": "aGk=",
+    "encoding": "base64",
+    "size": 2,
+    "total_count": 0,
+    "items": [],
+    "workflow_runs": [],
+    "check_runs": [],
+    "statuses": [],
+    "tree": [],
+}
+
+
+class TestReadOnlyAnnotation:
+    """Every registered tool is classified, and the reads really only read."""
+
+    @pytest.mark.asyncio
+    async def test_every_tool_is_classified(self) -> None:
+        from mcp_github_crunchtools.server import mcp
+
+        tools = await mcp.list_tools()
+        assert READ_ONLY.isdisjoint(WRITES)
+        assert {tool.name for tool in tools} == READ_ONLY | WRITES
+        annotated = {
+            tool.name
+            for tool in tools
+            if tool.annotations is not None
+            and tool.annotations.model_dump(by_alias=True).get("readOnlyHint") is True
+        }
+        assert annotated == READ_ONLY
+
+    def test_every_read_only_tool_has_call_arguments(self) -> None:
+        assert set(READ_ONLY_CALLS) == READ_ONLY
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", sorted(READ_ONLY))
+    async def test_read_only_tool_sends_only_get(self, name: str) -> None:
+        """A read-only tool reaches GitHub with GET or HEAD and nothing else."""
+        from mcp_github_crunchtools.server import mcp
+
+        with _patch_client(_mock_response(json_data=READ_BODY)) as client_cls:
+            await mcp.call_tool(name, READ_ONLY_CALLS[name])
+
+        request = client_cls.return_value.request
+        assert request.await_count >= 1
+        for call in request.await_args_list:
+            assert call.kwargs["method"] in READ_METHODS
+            assert call.kwargs["json"] is None
+
+
 class TestErrorSafety:
     """Tests to verify error messages don't leak sensitive data."""
 
@@ -338,9 +437,7 @@ class TestIssueTools:
         )
 
         with _patch_client(resp) as mock_client:
-            result = await update_pull_request(
-                owner="o", repo="r", pull_number=3, state="closed"
-            )
+            result = await update_pull_request(owner="o", repo="r", pull_number=3, state="closed")
             call = mock_client.return_value.request.call_args
             assert call.kwargs["method"] == "PATCH"
             assert "/pulls/3" in call.kwargs["url"]
@@ -438,9 +535,7 @@ class TestPullRequestTools:
         )
 
         with _patch_client_sequence(pr_resp, runs_resp, status_resp):
-            result = await get_pull_request_checks(
-                owner="o", repo="r", pull_number=5
-            )
+            result = await get_pull_request_checks(owner="o", repo="r", pull_number=5)
 
         assert result["head_sha"] == "deadbeef"
         assert result["mergeable"] is True
@@ -492,9 +587,7 @@ class TestPullRequestTools:
         )
 
         with _patch_client_sequence(pr_resp, runs_resp, status_resp):
-            result = await get_pull_request_checks(
-                owner="o", repo="r", pull_number=5
-            )
+            result = await get_pull_request_checks(owner="o", repo="r", pull_number=5)
 
         assert result["ready_to_merge"] is False
         assert result["summary"]["failing"] == 2
@@ -553,9 +646,7 @@ class TestActionsTools:
             )
             call = mock_client.return_value.request.call_args
             assert call.kwargs["method"] == "POST"
-            assert call.kwargs["url"].endswith(
-                "/actions/workflows/build.yml/dispatches"
-            )
+            assert call.kwargs["url"].endswith("/actions/workflows/build.yml/dispatches")
             assert call.kwargs["json"] == {"ref": "main"}
 
         assert result == {
@@ -569,15 +660,11 @@ class TestActionsTools:
         """When ref is omitted, it is fetched from the repo's default_branch."""
         from mcp_github_crunchtools.tools import trigger_workflow
 
-        repo_resp = _mock_response(
-            status_code=200, json_data={"default_branch": "trunk"}
-        )
+        repo_resp = _mock_response(status_code=200, json_data={"default_branch": "trunk"})
         dispatch_resp = _mock_response(status_code=204, text="", content_type="")
 
         with _patch_client_sequence(repo_resp, dispatch_resp) as mock_client:
-            result = await trigger_workflow(
-                owner="o", repo="r", workflow_id="build.yml"
-            )
+            result = await trigger_workflow(owner="o", repo="r", workflow_id="build.yml")
             calls = mock_client.return_value.request.call_args_list
             assert calls[0].kwargs["url"].endswith("/repos/o/r")
             assert calls[1].kwargs["json"] == {"ref": "trunk"}
@@ -612,12 +699,8 @@ class TestActionsTools:
 
         resp = _mock_response(status_code=204, text="", content_type="")
 
-        with _patch_client(resp), pytest.raises(
-            ValueError, match="not a valid git ref"
-        ):
-            await trigger_workflow(
-                owner="o", repo="r", workflow_id="build.yml", ref="../evil"
-            )
+        with _patch_client(resp), pytest.raises(ValueError, match="not a valid git ref"):
+            await trigger_workflow(owner="o", repo="r", workflow_id="build.yml", ref="../evil")
 
     @pytest.mark.asyncio
     async def test_rerun_workflow_run_empty_body(self) -> None:
@@ -730,9 +813,7 @@ class TestFileTools:
         resp = _mock_response(json_data={"tree": [], "truncated": False})
 
         with _patch_client(resp) as mock_client:
-            await list_repo_tree(
-                owner="o", repo="r", tree_sha="main", recursive=True
-            )
+            await list_repo_tree(owner="o", repo="r", tree_sha="main", recursive=True)
             call = mock_client.return_value.request.call_args
             assert call.kwargs["params"] == {"recursive": "1"}
 
@@ -834,8 +915,7 @@ class TestClientErrorHandling:
             status_code=403,
             json_data={
                 "message": (
-                    "Unable to retry this workflow run because it was "
-                    "created over a month ago"
+                    "Unable to retry this workflow run because it was created over a month ago"
                 )
             },
             headers={"x-ratelimit-remaining": "42"},

@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-10
+
+### Added
+
+- The eleven tools that only read (`list_issues`, `get_issue`,
+  `list_pull_requests`, `get_pull_request`, `get_pull_request_diff`,
+  `get_pull_request_checks`, `get_file_content`, `list_repo_tree`,
+  `search_code`, `search_issues`, `list_workflow_runs`) publish
+  `readOnlyHint: true`. A gateway uses it to decide whether an invalid optional
+  argument may be dropped or must refuse the call (crunchtools/constitution#35).
+- Tests pin every registered tool into `READ_ONLY` or `WRITES`, and check that
+  each read-only tool sends GitHub nothing but GET requests.
+
+### Changed
+
+- Inherits constitution v1.22.0; the workflow pins and the pre-commit hook rev
+  move with it.
+
+### Fixed
+
+- `server.json` said 0.1.0 and the Containerfile label said 0.3.0; both carry
+  the release version again.
+
 ## [1.0.1] - 2026-10-02
 
 ### Fixed

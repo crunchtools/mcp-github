@@ -7,12 +7,12 @@
     "url": "https://github.com/crunchtools/mcp-github",
     "source": "github"
   },
-  "version": "0.1.0",
+  "version": "1.1.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-github-crunchtools",
-      "version": "0.1.0",
+      "version": "1.1.0",
       "transport": {
         "type": "stdio"
       }

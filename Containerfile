@@ -27,7 +27,7 @@ FROM quay.io/hummingbird/python:latest
 
 # Labels for container metadata
 LABEL name="mcp-github-crunchtools" \
-      version="0.3.0" \
+      version="1.1.0" \
       summary="Secure MCP server for GitHub issues, pull requests, files, and search" \
       description="A security-focused MCP server for GitHub built on Red Hat UBI" \
       maintainer="crunchtools.com" \
