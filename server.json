@@ -2,17 +2,17 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.crunchtools/github",
   "title": "MCP GitHub",
-  "description": "Secure MCP server for GitHub issues, pull requests, files, and search",
+  "description": "Secure MCP server for GitHub issues, pull requests, Actions, releases, files, and search",
   "repository": {
     "url": "https://github.com/crunchtools/mcp-github",
     "source": "github"
   },
-  "version": "1.1.0",
+  "version": "1.2.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-github-crunchtools",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "transport": {
         "type": "stdio"
       }

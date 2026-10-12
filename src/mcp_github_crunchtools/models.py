@@ -6,15 +6,18 @@ attacks and ensure data integrity before making API calls.
 
 import re
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import get_config
 
 SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$")
+# A full commit id: 40 hex digits (SHA-1) or 64 (SHA-256 repositories).
+COMMIT_SHA_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 ISSUE_STATES = frozenset({"open", "closed", "all"})
 PR_STATES = frozenset({"open", "closed", "all"})
+MERGE_METHODS = frozenset({"merge", "squash", "rebase"})
 
 MAX_NAME_LENGTH = 100
 MAX_PATH_LENGTH = 1000
@@ -44,9 +47,7 @@ def resolve_owner(owner: str | None) -> str:
     if owner is None or not owner.strip():
         default = get_config().default_org
         if not default:
-            raise ValueError(
-                "owner is required (or set GITHUB_DEFAULT_ORG)"
-            )
+            raise ValueError("owner is required (or set GITHUB_DEFAULT_ORG)")
         owner = default
 
     return validate_name(owner, "owner")
@@ -75,8 +76,7 @@ def validate_name(value: str, field: str) -> str:
 
     if not SAFE_NAME_PATTERN.match(value):
         raise ValueError(
-            f"{field} must contain only letters, digits, dots, hyphens, "
-            "and underscores"
+            f"{field} must contain only letters, digits, dots, hyphens, and underscores"
         )
 
     return value
@@ -144,10 +144,55 @@ def validate_ref(value: str, field: str = "ref") -> str:
 
     if not SAFE_REF_PATTERN.match(value):
         raise ValueError(
-            f"{field} must contain only letters, digits, dots, hyphens, "
-            "underscores, and slashes"
+            f"{field} must contain only letters, digits, dots, hyphens, underscores, and slashes"
         )
 
+    return value
+
+
+def validate_head(value: str) -> str:
+    """Validate the head of a new pull request.
+
+    GitHub accepts a branch in the same repository ("feature/x") or a branch
+    in a fork, written "owner:branch". The owner part follows the name rules
+    and the branch part the ref rules.
+
+    Args:
+        value: The head branch, optionally prefixed with "owner:".
+
+    Returns:
+        The stripped, validated head.
+
+    Raises:
+        ValueError: If either part is empty or contains disallowed characters.
+    """
+    fork_owner, colon, branch = value.strip().rpartition(":")
+    if not colon:
+        return validate_ref(branch, "head")
+    return f"{validate_name(fork_owner, 'head owner')}:{validate_ref(branch, 'head')}"
+
+
+def validate_commit_sha(value: str | None, field: str = "sha") -> str | None:
+    """Validate an optional full commit SHA.
+
+    An empty or whitespace-only value means "not given" and becomes None.
+
+    Args:
+        value: The SHA, or None.
+        field: Field name for error messages.
+
+    Returns:
+        The lower-cased SHA, or None when no value was given.
+
+    Raises:
+        ValueError: If a value was given that is not 40 or 64 hex digits.
+    """
+    if value is None or not value.strip():
+        return None
+
+    value = value.strip().lower()
+    if not COMMIT_SHA_PATTERN.match(value):
+        raise ValueError(f"{field} must be a full 40 or 64 character commit SHA")
     return value
 
 
@@ -169,17 +214,13 @@ def validate_workflow_inputs(inputs: dict[str, object]) -> dict[str, object]:
         raise ValueError("inputs must be an object of name/value pairs")
 
     if len(inputs) > MAX_WORKFLOW_INPUTS:
-        raise ValueError(
-            f"inputs may not exceed {MAX_WORKFLOW_INPUTS} entries"
-        )
+        raise ValueError(f"inputs may not exceed {MAX_WORKFLOW_INPUTS} entries")
 
     for key, value in inputs.items():
         validate_name(key, "inputs key")
         is_primitive = isinstance(value, (str, int, float, bool))
         if not is_primitive:
-            raise ValueError(
-                f"inputs value for '{key}' must be a string, number, or boolean"
-            )
+            raise ValueError(f"inputs value for '{key}' must be a string, number, or boolean")
 
     return inputs
 
@@ -213,3 +254,28 @@ class CreateIssueInput(BaseModel):
         max_length=MAX_BODY_LENGTH,
         description="Issue body (Markdown)",
     )
+
+
+class CreateReleaseInput(BaseModel):
+    """Validated input for the free-text fields of a new release."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(
+        default=None,
+        max_length=MAX_TITLE_LENGTH,
+        description="Release title (GitHub uses the tag name when omitted)",
+    )
+    body: str = Field(
+        default="",
+        max_length=MAX_BODY_LENGTH,
+        description="Release notes (Markdown)",
+    )
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _blank_name_is_not_given(cls, value: object) -> object:
+        """An empty or whitespace-only optional name means "not given"."""
+        if isinstance(value, str):
+            return value.strip() or None
+        return value

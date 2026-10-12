@@ -7,9 +7,15 @@ Integration tests with a real GitHub account should be run separately.
 import base64
 import os
 
+import httpx
 import pytest
 
-from tests.conftest import _mock_response, _patch_client, _patch_client_sequence
+from tests.conftest import (
+    _mock_response,
+    _patch_client,
+    _patch_client_sequence,
+    _patch_transport,
+)
 
 
 class TestToolRegistration:
@@ -31,10 +37,10 @@ class TestToolRegistration:
             assert callable(func), f"{name} is not callable"
 
     def test_tool_count(self) -> None:
-        """Server should export exactly 18 tools."""
+        """Server should export exactly 25 tools."""
         from mcp_github_crunchtools.tools import __all__
 
-        assert len(__all__) == 18
+        assert len(__all__) == 25
 
 
 READ_ONLY = frozenset(
@@ -45,11 +51,14 @@ READ_ONLY = frozenset(
         "get_pull_request_tool",
         "get_pull_request_diff_tool",
         "get_pull_request_checks_tool",
+        "list_pull_request_comments_tool",
         "get_file_content_tool",
         "list_repo_tree_tool",
         "search_code_tool",
         "search_issues_tool",
         "list_workflow_runs_tool",
+        "get_workflow_run_tool",
+        "get_failed_job_logs_tool",
     }
 )
 WRITES = frozenset(
@@ -58,9 +67,13 @@ WRITES = frozenset(
         "create_issue_comment_tool",
         "update_issue_tool",
         "update_pull_request_tool",
+        "create_pull_request_tool",
+        "merge_pull_request_tool",
+        "reply_to_review_comment_tool",
         "trigger_workflow_tool",
         "rerun_workflow_run_tool",
         "rerun_failed_jobs_tool",
+        "create_release_tool",
     }
 )
 
@@ -77,6 +90,9 @@ READ_ONLY_CALLS: dict[str, dict[str, object]] = {
     "search_code_tool": {"query": "FastMCP repo:o/r"},
     "search_issues_tool": {"query": "is:open repo:o/r"},
     "list_workflow_runs_tool": {"owner": "o", "repo": "r"},
+    "list_pull_request_comments_tool": {"owner": "o", "repo": "r", "pull_number": 1},
+    "get_workflow_run_tool": {"owner": "o", "repo": "r", "run_id": 1},
+    "get_failed_job_logs_tool": {"owner": "o", "repo": "r", "run_id": 1},
 }
 
 # Methods a read-only tool may send. Every read here is a plain REST GET, so
@@ -85,6 +101,8 @@ READ_METHODS = frozenset({"GET", "HEAD"})
 
 # One body that every read-only tool can parse: a PR with a head SHA, a
 # base64 file, and the empty collections the list and search tools unwrap.
+# get_failed_job_logs_tool's log downloads (also GETs) are covered with a real
+# transport in TestFailedJobLogs; with no failed job here it makes none.
 READ_BODY = {
     "head": {"sha": "abc123"},
     "content": "aGk=",
@@ -96,6 +114,7 @@ READ_BODY = {
     "check_runs": [],
     "statuses": [],
     "tree": [],
+    "jobs": [],
 }
 
 
@@ -595,6 +614,415 @@ class TestPullRequestTools:
         assert result["failing"][0]["url"] == "https://gh/run/1"
         assert result["failing"][1]["name"] == "ci/legacy"
 
+    @pytest.mark.asyncio
+    async def test_create_pull_request(self) -> None:
+        from mcp_github_crunchtools.tools import create_pull_request
+
+        resp = _mock_response(
+            status_code=201,
+            json_data={
+                "number": 12,
+                "html_url": "https://github.com/o/r/pull/12",
+                "title": "Add widgets",
+                "state": "open",
+                "draft": True,
+                "body": "dropped",
+            },
+        )
+
+        with _patch_client(resp) as mock_client:
+            result = await create_pull_request(
+                owner="o",
+                repo="r",
+                title="  Add widgets  ",
+                head="feature/widgets",
+                base="main",
+                body="Why and how.",
+                draft=True,
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["method"] == "POST"
+            assert call.kwargs["url"] == "/repos/o/r/pulls"
+            assert call.kwargs["json"] == {
+                "title": "Add widgets",
+                "body": "Why and how.",
+                "head": "feature/widgets",
+                "base": "main",
+                "draft": True,
+            }
+
+        assert result == {
+            "number": 12,
+            "html_url": "https://github.com/o/r/pull/12",
+            "title": "Add widgets",
+            "state": "open",
+            "draft": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_create_pull_request_from_fork(self) -> None:
+        """A head in a fork is written owner:branch."""
+        from mcp_github_crunchtools.tools import create_pull_request
+
+        resp = _mock_response(status_code=201, json_data={"number": 13})
+
+        with _patch_client(resp) as mock_client:
+            await create_pull_request(
+                owner="o", repo="r", title="Fix", head="alice:fix/typo", base="main"
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["json"]["head"] == "alice:fix/typo"
+            assert call.kwargs["json"]["draft"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("title", "   "),
+            ("head", "feature;rm -rf"),
+            ("head", "bad owner:feature"),
+            ("head", "alice:"),
+            ("base", "../main"),
+            ("repo", "r/../x"),
+        ],
+    )
+    async def test_create_pull_request_refuses_bad_input(self, field: str, value: str) -> None:
+        """Invalid input is refused before any request is made."""
+        from mcp_github_crunchtools.errors import ValidationError
+        from mcp_github_crunchtools.tools import create_pull_request
+
+        arguments = {"owner": "o", "repo": "r", "title": "Fix", "head": "fix", "base": "main"}
+        arguments[field] = value
+
+        with _patch_client(_mock_response(json_data={})) as mock_client:
+            with pytest.raises((ValueError, ValidationError), match=r".+"):
+                await create_pull_request(**arguments)
+            mock_client.return_value.request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_pull_request_github_error(self) -> None:
+        """GitHub's 422 (no commits, PR already exists) keeps its message."""
+        from mcp_github_crunchtools.errors import GitHubApiError
+        from mcp_github_crunchtools.tools import create_pull_request
+
+        resp = _mock_response(status_code=422, json_data={"message": "Validation Failed"})
+
+        with _patch_client(resp), pytest.raises(GitHubApiError, match="422: Validation Failed"):
+            await create_pull_request(owner="o", repo="r", title="Fix", head="fix", base="main")
+
+    @pytest.mark.asyncio
+    async def test_merge_pull_request(self) -> None:
+        from mcp_github_crunchtools.tools import merge_pull_request
+
+        head_sha = "a" * 40
+        resp = _mock_response(
+            json_data={
+                "merged": True,
+                "sha": "b" * 40,
+                "message": "Pull Request successfully merged",
+            },
+        )
+
+        with _patch_client(resp) as mock_client:
+            result = await merge_pull_request(
+                owner="o", repo="r", pull_number=12, merge_method="squash", sha=head_sha.upper()
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["method"] == "PUT"
+            assert call.kwargs["url"] == "/repos/o/r/pulls/12/merge"
+            assert call.kwargs["json"] == {"merge_method": "squash", "sha": head_sha}
+
+        assert result == {
+            "merged": True,
+            "sha": "b" * 40,
+            "message": "Pull Request successfully merged",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sha", [None, "", "   "])
+    async def test_merge_pull_request_without_sha(self, sha: str | None) -> None:
+        """A blank optional sha means "not given": it is left out of the body."""
+        from mcp_github_crunchtools.tools import merge_pull_request
+
+        resp = _mock_response(json_data={"merged": True})
+
+        with _patch_client(resp) as mock_client:
+            await merge_pull_request(owner="o", repo="r", pull_number=12, sha=sha)
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["json"] == {"merge_method": "merge"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            {"pull_number": 12, "merge_method": "fast-forward"},
+            {"pull_number": 12, "merge_method": ""},
+            {"pull_number": 12, "sha": "abc123"},
+            {"pull_number": 12, "sha": "z" * 40},
+            {"pull_number": 0},
+        ],
+    )
+    async def test_merge_pull_request_refuses_bad_input(self, arguments: dict[str, object]) -> None:
+        from mcp_github_crunchtools.errors import ValidationError
+        from mcp_github_crunchtools.tools import merge_pull_request
+
+        with _patch_client(_mock_response(json_data={})) as mock_client:
+            with pytest.raises((ValueError, ValidationError), match=r".+"):
+                await merge_pull_request(owner="o", repo="r", **arguments)
+            mock_client.return_value.request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status_code", "message"),
+        [
+            (405, "Pull Request is not mergeable"),
+            (409, "Head branch was modified. Review and try the merge again."),
+        ],
+    )
+    async def test_merge_pull_request_github_refusal(self, status_code: int, message: str) -> None:
+        """Not mergeable (405) and a moved head (409) keep GitHub's message."""
+        from mcp_github_crunchtools.errors import GitHubApiError
+        from mcp_github_crunchtools.tools import merge_pull_request
+
+        resp = _mock_response(status_code=status_code, json_data={"message": message})
+
+        with _patch_client(resp), pytest.raises(GitHubApiError) as exc_info:
+            await merge_pull_request(owner="o", repo="r", pull_number=12, sha="a" * 40)
+
+        assert f"{status_code}: {message}" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_list_pull_request_comments_combines_three_kinds(self) -> None:
+        """Issue comments, review comments and reviews come back as one list."""
+        from mcp_github_crunchtools.tools import list_pull_request_comments
+
+        issue_comments = _mock_response(
+            json_data=[
+                {
+                    "id": 1,
+                    "user": {"login": "alice"},
+                    "created_at": "2026-10-01T10:00:00Z",
+                    "body": "Looks close.",
+                    "html_url": "https://github.com/o/r/pull/5#issuecomment-1",
+                    "reactions": {"dropped": True},
+                },
+            ],
+        )
+        review_comments = _mock_response(
+            json_data=[
+                {
+                    "id": 20,
+                    "user": {"login": "review-bot[bot]"},
+                    "created_at": "2026-10-01T09:00:00Z",
+                    "body": "HIGH: unchecked input",
+                    "path": "src/app.py",
+                    "line": 42,
+                    "pull_request_review_id": 300,
+                    "html_url": "https://github.com/o/r/pull/5#discussion_r20",
+                },
+                {
+                    "id": 21,
+                    "user": {"login": "bob"},
+                    "created_at": "2026-10-01T11:00:00Z",
+                    "body": "fixed in abc1234",
+                    "path": "src/app.py",
+                    "line": None,
+                    "in_reply_to_id": 20,
+                    "pull_request_review_id": 301,
+                    "html_url": "https://github.com/o/r/pull/5#discussion_r21",
+                },
+            ],
+        )
+        reviews = _mock_response(
+            json_data=[
+                {
+                    "id": 300,
+                    "user": None,
+                    "submitted_at": "2026-10-01T09:00:01Z",
+                    "state": "COMMENTED",
+                    "body": None,
+                    "html_url": "https://github.com/o/r/pull/5#pullrequestreview-300",
+                },
+            ],
+        )
+
+        with _patch_client_sequence(issue_comments, review_comments, reviews) as mock_client:
+            result = await list_pull_request_comments(owner="o", repo="r", pull_number=5)
+            calls = mock_client.return_value.request.call_args_list
+            assert [call.kwargs["url"] for call in calls] == [
+                "/repos/o/r/issues/5/comments",
+                "/repos/o/r/pulls/5/comments",
+                "/repos/o/r/pulls/5/reviews",
+            ]
+            assert all(call.kwargs["method"] == "GET" for call in calls)
+            assert calls[0].kwargs["params"] == {"per_page": 100, "page": 1}
+
+        assert result["pull_number"] == 5
+        assert result["total_count"] == 4
+        assert result["truncated"] is False
+        assert result["truncated_kinds"] == []
+        assert [(item["kind"], item["id"]) for item in result["items"]] == [
+            ("review_comment", 20),
+            ("review", 300),
+            ("issue_comment", 1),
+            ("review_comment", 21),
+        ]
+        assert result["items"][0] == {
+            "kind": "review_comment",
+            "id": 20,
+            "author": "review-bot[bot]",
+            "created_at": "2026-10-01T09:00:00Z",
+            "body": "HIGH: unchecked input",
+            "html_url": "https://github.com/o/r/pull/5#discussion_r20",
+            "path": "src/app.py",
+            "line": 42,
+            "in_reply_to_id": None,
+            "review_id": 300,
+        }
+        assert result["items"][1] == {
+            "kind": "review",
+            "id": 300,
+            "author": None,
+            "created_at": "2026-10-01T09:00:01Z",
+            "body": "",
+            "html_url": "https://github.com/o/r/pull/5#pullrequestreview-300",
+            "state": "COMMENTED",
+        }
+        assert result["items"][2] == {
+            "kind": "issue_comment",
+            "id": 1,
+            "author": "alice",
+            "created_at": "2026-10-01T10:00:00Z",
+            "body": "Looks close.",
+            "html_url": "https://github.com/o/r/pull/5#issuecomment-1",
+        }
+        assert result["items"][3]["in_reply_to_id"] == 20
+
+    @pytest.mark.asyncio
+    async def test_list_pull_request_comments_follows_pages(self) -> None:
+        """A Link rel=next is followed until a page has none."""
+        from mcp_github_crunchtools.tools import list_pull_request_comments
+
+        next_link = {"link": '<https://api.github.com/x?page=2>; rel="next"'}
+        first = _mock_response(
+            json_data=[{"id": 1, "created_at": "2026-10-01T10:00:00Z"}], headers=next_link
+        )
+        second = _mock_response(json_data=[{"id": 2, "created_at": "2026-10-01T10:05:00Z"}])
+        empty = _mock_response(json_data=[])
+
+        with _patch_client_sequence(first, second, empty, empty) as mock_client:
+            result = await list_pull_request_comments(owner="o", repo="r", pull_number=5)
+            calls = mock_client.return_value.request.call_args_list
+            assert [(call.kwargs["url"], call.kwargs["params"]["page"]) for call in calls] == [
+                ("/repos/o/r/issues/5/comments", 1),
+                ("/repos/o/r/issues/5/comments", 2),
+                ("/repos/o/r/pulls/5/comments", 1),
+                ("/repos/o/r/pulls/5/reviews", 1),
+            ]
+
+        assert [item["id"] for item in result["items"]] == [1, 2]
+        assert result["truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_pull_request_comments_caps_each_kind(self) -> None:
+        """Paging stops at the cap, and the result says what was cut."""
+        from mcp_github_crunchtools.tools import list_pull_request_comments
+        from mcp_github_crunchtools.tools.pull_requests import MAX_PR_COMMENTS_PER_KIND
+
+        endless = _mock_response(
+            json_data=[{"id": n, "created_at": "2026-10-01T10:00:00Z"} for n in range(100)],
+            headers={"link": '<https://api.github.com/x?page=2>; rel="next"'},
+        )
+
+        with _patch_client(endless) as mock_client:
+            result = await list_pull_request_comments(owner="o", repo="r", pull_number=5)
+            assert mock_client.return_value.request.await_count == 9
+
+        assert result["truncated"] is True
+        assert result["truncated_kinds"] == ["issue_comment", "review_comment", "review"]
+        assert result["total_count"] == 3 * MAX_PR_COMMENTS_PER_KIND
+        assert len(result["items"]) == 3 * MAX_PR_COMMENTS_PER_KIND
+
+    @pytest.mark.asyncio
+    async def test_list_pull_request_comments_refuses_bad_number(self) -> None:
+        from mcp_github_crunchtools.tools import list_pull_request_comments
+
+        with _patch_client(_mock_response(json_data=[])) as mock_client:
+            with pytest.raises(ValueError, match="positive integer"):
+                await list_pull_request_comments(owner="o", repo="r", pull_number=0)
+            mock_client.return_value.request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_list_pull_request_comments_not_found(self) -> None:
+        from mcp_github_crunchtools.errors import NotFoundError
+        from mcp_github_crunchtools.tools import list_pull_request_comments
+
+        resp = _mock_response(status_code=404, json_data={"message": "Not Found"})
+
+        with _patch_client(resp), pytest.raises(NotFoundError):
+            await list_pull_request_comments(owner="o", repo="r", pull_number=5)
+
+    @pytest.mark.asyncio
+    async def test_reply_to_review_comment(self) -> None:
+        from mcp_github_crunchtools.tools import reply_to_review_comment
+
+        resp = _mock_response(
+            status_code=201,
+            json_data={
+                "id": 22,
+                "html_url": "https://github.com/o/r/pull/5#discussion_r22",
+                "in_reply_to_id": 20,
+                "body": "fixed in abc1234",
+            },
+        )
+
+        with _patch_client(resp) as mock_client:
+            result = await reply_to_review_comment(
+                owner="o", repo="r", pull_number=5, comment_id=20, body="fixed in abc1234"
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["method"] == "POST"
+            assert call.kwargs["url"] == "/repos/o/r/pulls/5/comments/20/replies"
+            assert call.kwargs["json"] == {"body": "fixed in abc1234"}
+
+        assert result == {
+            "id": 22,
+            "html_url": "https://github.com/o/r/pull/5#discussion_r22",
+            "in_reply_to_id": 20,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            {"pull_number": 5, "comment_id": 20, "body": ""},
+            {"pull_number": 5, "comment_id": 20, "body": "x" * 65537},
+            {"pull_number": 5, "comment_id": 0, "body": "ok"},
+            {"pull_number": -1, "comment_id": 20, "body": "ok"},
+        ],
+    )
+    async def test_reply_to_review_comment_refuses_bad_input(
+        self, arguments: dict[str, object]
+    ) -> None:
+        from mcp_github_crunchtools.tools import reply_to_review_comment
+
+        with _patch_client(_mock_response(json_data={})) as mock_client:
+            with pytest.raises(ValueError, match=r".+"):
+                await reply_to_review_comment(owner="o", repo="r", **arguments)
+            mock_client.return_value.request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reply_to_review_comment_not_found(self) -> None:
+        from mcp_github_crunchtools.errors import NotFoundError
+        from mcp_github_crunchtools.tools import reply_to_review_comment
+
+        resp = _mock_response(status_code=404, json_data={"message": "Not Found"})
+
+        with _patch_client(resp), pytest.raises(NotFoundError):
+            await reply_to_review_comment(
+                owner="o", repo="r", pull_number=5, comment_id=20, body="ok"
+            )
+
 
 class TestActionsTools:
     """Tests for GitHub Actions tools."""
@@ -730,6 +1158,647 @@ class TestActionsTools:
             assert call.kwargs["url"].endswith("/actions/runs/42/rerun-failed-jobs")
 
         assert result == {"status": "rerun_requested", "run_id": 42}
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_run(self) -> None:
+        """The run and its jobs are trimmed to the fields that matter."""
+        from mcp_github_crunchtools.tools import get_workflow_run
+
+        run = _mock_response(
+            json_data={
+                "id": 77,
+                "name": "CI",
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": "c" * 40,
+                "head_branch": "feature/widgets",
+                "event": "pull_request",
+                "html_url": "https://github.com/o/r/actions/runs/77",
+                "actor": {"login": "dropped"},
+            },
+        )
+        jobs = _mock_response(
+            json_data={
+                "total_count": 2,
+                "jobs": [
+                    {"id": 1, "name": "lint", "status": "completed", "conclusion": "success"},
+                    {
+                        "id": 2,
+                        "name": "test",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "steps": [{"name": "dropped"}],
+                    },
+                ],
+            },
+        )
+
+        with _patch_client_sequence(run, jobs) as mock_client:
+            result = await get_workflow_run(owner="o", repo="r", run_id=77)
+            calls = mock_client.return_value.request.call_args_list
+            assert [call.kwargs["url"] for call in calls] == [
+                "/repos/o/r/actions/runs/77",
+                "/repos/o/r/actions/runs/77/jobs",
+            ]
+            assert all(call.kwargs["method"] == "GET" for call in calls)
+
+        assert result == {
+            "id": 77,
+            "name": "CI",
+            "status": "completed",
+            "conclusion": "failure",
+            "head_sha": "c" * 40,
+            "head_branch": "feature/widgets",
+            "event": "pull_request",
+            "html_url": "https://github.com/o/r/actions/runs/77",
+            "jobs": [
+                {"id": 1, "name": "lint", "status": "completed", "conclusion": "success"},
+                {"id": 2, "name": "test", "status": "completed", "conclusion": "failure"},
+            ],
+            "jobs_truncated": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_run_caps_jobs(self) -> None:
+        """A run with more jobs than the cap says its job list was cut."""
+        from mcp_github_crunchtools.tools import get_workflow_run
+        from mcp_github_crunchtools.tools.actions import MAX_RUN_JOBS
+
+        page = _mock_response(
+            json_data={
+                "total_count": 1000,
+                "jobs": [{"id": n + 1, "name": f"matrix-{n}"} for n in range(100)],
+            },
+        )
+
+        with _patch_client(page) as mock_client:
+            result = await get_workflow_run(owner="o", repo="r", run_id=77)
+            calls = mock_client.return_value.request.call_args_list
+            assert [call.kwargs["params"] for call in calls[1:]] == [
+                {"per_page": 100, "page": 1},
+                {"per_page": 100, "page": 2},
+                {"per_page": 100, "page": 3},
+            ]
+
+        assert len(result["jobs"]) == MAX_RUN_JOBS
+        assert result["jobs_truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_run_refuses_bad_run_id(self) -> None:
+        from mcp_github_crunchtools.tools import get_workflow_run
+
+        with _patch_client(_mock_response(json_data={})) as mock_client:
+            with pytest.raises(ValueError, match="positive integer"):
+                await get_workflow_run(owner="o", repo="r", run_id=0)
+            mock_client.return_value.request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_run_not_found(self) -> None:
+        from mcp_github_crunchtools.errors import NotFoundError
+        from mcp_github_crunchtools.tools import get_workflow_run
+
+        resp = _mock_response(status_code=404, json_data={"message": "Not Found"})
+
+        with _patch_client(resp), pytest.raises(NotFoundError):
+            await get_workflow_run(owner="o", repo="r", run_id=77)
+
+
+LOG_HOST = "logs.example.net"
+# Where the storage host would send the download on, if it were followed.
+SECOND_HOP_HOST = "elsewhere.example.net"
+SIGNATURE = "sig=s3cr3t-signature"
+
+
+class _LogBackend:
+    """A GitHub API plus the storage host its job-log redirects point at.
+
+    ``jobs`` is the run's job list; ``logs`` maps a job id to its log body.
+    Every request the client sends is kept in ``requests``.
+    """
+
+    def __init__(
+        self,
+        jobs: list[dict[str, object]],
+        logs: dict[int, bytes],
+        location: str = f"https://{LOG_HOST}/blob",
+        storage_status: int = 200,
+        storage_failure: type[httpx.RequestError] | None = None,
+    ) -> None:
+        self.jobs = jobs
+        self.logs = logs
+        self.location = location
+        self.storage_status = storage_status
+        self.storage_failure = storage_failure
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        path = request.url.path
+        if request.url.host != "api.github.com":
+            if self.storage_failure is not None:
+                raise self.storage_failure(f"could not reach {request.url}", request=request)
+            job_id = int(path.rsplit("/", 1)[1])
+            return httpx.Response(
+                self.storage_status,
+                content=self.logs[job_id],
+                headers={"location": f"https://{SECOND_HOP_HOST}/blob/{job_id}"},
+            )
+        if path.endswith("/jobs"):
+            return httpx.Response(200, json={"total_count": len(self.jobs), "jobs": self.jobs})
+        job_id = int(path.split("/")[-2])
+        if job_id not in self.logs:
+            return httpx.Response(404, json={"message": "Not Found"})
+        location = f"{self.location}/{job_id}?{SIGNATURE}"
+        return httpx.Response(302, headers={"location": location})
+
+    def sent_to(self, host: str) -> list[httpx.Request]:
+        return [request for request in self.requests if request.url.host == host]
+
+
+def _failed_job(job_id: int, name: str = "test") -> dict[str, object]:
+    return {
+        "id": job_id,
+        "name": name,
+        "status": "completed",
+        "conclusion": "failure",
+        "html_url": f"https://github.com/o/r/actions/runs/77/job/{job_id}",
+        "steps": [
+            {"name": "Set up job", "conclusion": "success"},
+            {"name": "Run tests", "conclusion": "failure"},
+            {"name": "Upload", "conclusion": "skipped"},
+        ],
+    }
+
+
+def _log_lines(count: int, text: str = "line") -> bytes:
+    return "".join(
+        f"2026-10-11T12:00:00.{n:07d}Z {text} {n}\n" for n in range(1, count + 1)
+    ).encode()
+
+
+class TestFailedJobLogs:
+    """Tests for get_failed_job_logs and the redirect it follows."""
+
+    @pytest.mark.asyncio
+    async def test_returns_tail_of_failed_jobs_only(self) -> None:
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        backend = _LogBackend(
+            jobs=[
+                {"id": 1, "name": "lint", "conclusion": "success"},
+                _failed_job(2),
+                {"id": 3, "name": "deploy", "conclusion": "skipped"},
+                {**_failed_job(4, name="slow"), "conclusion": "timed_out"},
+            ],
+            logs={2: _log_lines(500), 4: _log_lines(3, text="waiting")},
+        )
+
+        with _patch_transport(backend):
+            result = await get_failed_job_logs(owner="o", repo="r", run_id=77, tail_lines=3)
+
+        assert [request.url.path for request in backend.sent_to("api.github.com")] == [
+            "/repos/o/r/actions/runs/77/jobs",
+            "/repos/o/r/actions/jobs/2/logs",
+            "/repos/o/r/actions/jobs/4/logs",
+        ]
+        assert result == {
+            "run_id": 77,
+            "tail_lines": 3,
+            "failed_job_count": 2,
+            "failed_jobs_omitted": 0,
+            "jobs_truncated": False,
+            "truncated": False,
+            "jobs": [
+                {
+                    "id": 2,
+                    "name": "test",
+                    "conclusion": "failure",
+                    "html_url": "https://github.com/o/r/actions/runs/77/job/2",
+                    "failed_steps": ["Run tests"],
+                    "log": "line 498\nline 499\nline 500",
+                    "log_lines": 3,
+                    "truncated": False,
+                },
+                {
+                    "id": 4,
+                    "name": "slow",
+                    "conclusion": "timed_out",
+                    "html_url": "https://github.com/o/r/actions/runs/77/job/4",
+                    "failed_steps": ["Run tests"],
+                    "log": "waiting 1\nwaiting 2\nwaiting 3",
+                    "log_lines": 3,
+                    "truncated": False,
+                },
+            ],
+        }
+
+    @pytest.mark.asyncio
+    async def test_token_is_not_sent_to_the_redirect_target(self) -> None:
+        """The API hop is authenticated; the storage hop carries no token."""
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        backend = _LogBackend(jobs=[_failed_job(2)], logs={2: _log_lines(5)})
+
+        with _patch_transport(backend):
+            await get_failed_job_logs(owner="o", repo="r", run_id=77)
+
+        api_requests = backend.sent_to("api.github.com")
+        storage_requests = backend.sent_to(LOG_HOST)
+        token = os.environ["GITHUB_TOKEN"]
+
+        assert len(api_requests) == 2
+        for request in api_requests:
+            assert request.headers["authorization"] == f"Bearer {token}"
+
+        assert len(storage_requests) == 1
+        download = storage_requests[0]
+        assert download.method == "GET"
+        assert str(download.url) == f"https://{LOG_HOST}/blob/2?{SIGNATURE}"
+        assert "authorization" not in download.headers
+        assert "x-github-api-version" not in download.headers
+        assert all(token not in value for value in download.headers.values())
+
+    @pytest.mark.asyncio
+    async def test_strips_ansi_timestamps_and_bom(self) -> None:
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        raw = (
+            "﻿2026-10-11T12:00:00.0000001Z ##[group]Run pytest\r\n"
+            "2026-10-11T12:00:01.0000002Z \x1b[36;1mpytest -v\x1b[0m\r\n"
+            "2026-10-11T12:00:02.0000003Z \x1b]0;title\x07FAILED tests/test_x.py::test_y\n"
+            "2026-10-11T12:00:03.0000004Z at 2026-10-11T12:00:03Z the suite ended\n"
+            "2026-10-11T12:00:04.0000005Z \x1b[31m##[error]Process completed"
+            " with exit code 1.\x1b[0m\n"
+        ).encode()
+        backend = _LogBackend(jobs=[_failed_job(2)], logs={2: raw})
+
+        with _patch_transport(backend):
+            result = await get_failed_job_logs(owner="o", repo="r", run_id=77)
+
+        assert result["jobs"][0]["log"].split("\n") == [
+            "##[group]Run pytest",
+            "pytest -v",
+            "FAILED tests/test_x.py::test_y",
+            "at 2026-10-11T12:00:03Z the suite ended",
+            "##[error]Process completed with exit code 1.",
+        ]
+        assert result["jobs"][0]["log_lines"] == 5
+        assert result["truncated"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("requested", "used"),
+        [(5000, 1000), (1000, 1000), (0, 200), (-3, 200)],
+    )
+    async def test_tail_lines_is_bounded(self, requested: int, used: int) -> None:
+        """tail_lines is capped at the maximum; a non-positive value is the default."""
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        backend = _LogBackend(jobs=[_failed_job(2)], logs={2: _log_lines(1500)})
+
+        with _patch_transport(backend):
+            result = await get_failed_job_logs(owner="o", repo="r", run_id=77, tail_lines=requested)
+
+        assert result["tail_lines"] == used
+        assert result["jobs"][0]["log_lines"] == used
+        assert result["jobs"][0]["log"].endswith("line 1500")
+
+    @pytest.mark.asyncio
+    async def test_byte_cap_cuts_a_long_log_and_says_so(self) -> None:
+        """A tail larger than the byte cap is cut from its start, on a line."""
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+        from mcp_github_crunchtools.tools.actions import MAX_LOG_TOTAL_BYTES
+
+        backend = _LogBackend(jobs=[_failed_job(2)], logs={2: _log_lines(1000, text="x" * 2000)})
+
+        with _patch_transport(backend):
+            result = await get_failed_job_logs(owner="o", repo="r", run_id=77, tail_lines=1000)
+
+        job = result["jobs"][0]
+        assert result["truncated"] is True
+        assert job["truncated"] is True
+        assert 0 < job["log_lines"] < 1000
+        assert len(job["log"].encode()) <= MAX_LOG_TOTAL_BYTES
+        lines = job["log"].split("\n")
+        assert lines[-1] == "x" * 2000 + " 1000"
+        assert all(line.startswith("x" * 2000 + " ") for line in lines)
+
+    @pytest.mark.asyncio
+    async def test_many_failed_jobs_share_the_byte_cap(self) -> None:
+        """Past the job limit jobs are counted, not fetched; the rest split the cap."""
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+        from mcp_github_crunchtools.tools.actions import (
+            MAX_FAILED_JOB_LOGS,
+            MAX_LOG_TOTAL_BYTES,
+        )
+
+        job_ids = list(range(1, MAX_FAILED_JOB_LOGS + 3))
+        backend = _LogBackend(
+            jobs=[_failed_job(job_id) for job_id in job_ids],
+            logs=dict.fromkeys(job_ids, _log_lines(1000, text="y" * 500)),
+        )
+
+        with _patch_transport(backend):
+            result = await get_failed_job_logs(owner="o", repo="r", run_id=77, tail_lines=1000)
+
+        assert result["failed_job_count"] == MAX_FAILED_JOB_LOGS + 2
+        assert result["failed_jobs_omitted"] == 2
+        assert result["truncated"] is True
+        assert [job["id"] for job in result["jobs"]] == job_ids[:MAX_FAILED_JOB_LOGS]
+        assert len(backend.sent_to(LOG_HOST)) == MAX_FAILED_JOB_LOGS
+        assert all(job["truncated"] for job in result["jobs"])
+        assert sum(len(job["log"].encode()) for job in result["jobs"]) <= MAX_LOG_TOTAL_BYTES
+
+    @pytest.mark.asyncio
+    async def test_no_failed_jobs(self) -> None:
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        backend = _LogBackend(jobs=[{"id": 1, "name": "lint", "conclusion": "success"}], logs={})
+
+        with _patch_transport(backend):
+            result = await get_failed_job_logs(owner="o", repo="r", run_id=77)
+
+        assert result["jobs"] == []
+        assert result["failed_job_count"] == 0
+        assert result["truncated"] is False
+        assert len(backend.requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_refuses_bad_run_id(self) -> None:
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        backend = _LogBackend(jobs=[], logs={})
+
+        with _patch_transport(backend), pytest.raises(ValueError, match="positive integer"):
+            await get_failed_job_logs(owner="o", repo="r", run_id=0)
+
+        assert backend.requests == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "location",
+        [
+            f"http://{LOG_HOST}/blob",
+            f"https://alice:hunter2@{LOG_HOST}/blob",
+            f"https://alice@{LOG_HOST}/blob",
+            "https:///blob",
+            "/blob",
+            "https://192.0.2.10/blob",
+            "https://[2001:db8::10]/blob",
+            "https://169.254.169.254/latest/meta-data",
+            "https://2130706433/blob",
+            "https://127.1/blob",
+            "https://0x7f.0.0.1/blob",
+            "https://0x7f000001/blob",
+            "https://logs.example.net.0177/blob",
+            "ftp://logs.example.net/blob",
+        ],
+    )
+    async def test_refuses_a_redirect_that_is_not_plain_https(self, location: str) -> None:
+        """Only HTTPS to a named host, without credentials, is ever requested."""
+        from mcp_github_crunchtools.errors import GitHubApiError
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        backend = _LogBackend(jobs=[_failed_job(2)], logs={2: _log_lines(5)}, location=location)
+
+        with _patch_transport(backend), pytest.raises(GitHubApiError, match="not plain HTTPS"):
+            await get_failed_job_logs(owner="o", repo="r", run_id=77)
+
+        assert [request.url.host for request in backend.requests] == ["api.github.com"] * 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("failure", "message"),
+        [
+            (httpx.ConnectError, "GitHub API error 0: Download failed"),
+            (httpx.ReadTimeout, "GitHub API error 0: Download timed out"),
+        ],
+    )
+    async def test_storage_transport_failure_does_not_leak_the_signed_url(
+        self, failure: type[httpx.RequestError], message: str
+    ) -> None:
+        """httpx names the URL in its exception; neither it nor its chain survives."""
+        from mcp_github_crunchtools.errors import GitHubApiError
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        backend = _LogBackend(
+            jobs=[_failed_job(2)], logs={2: _log_lines(5)}, storage_failure=failure
+        )
+
+        with _patch_transport(backend), pytest.raises(GitHubApiError) as exc_info:
+            await get_failed_job_logs(owner="o", repo="r", run_id=77)
+
+        assert str(exc_info.value) == message
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__suppress_context__ is True
+        assert len(backend.sent_to(LOG_HOST)) == 1
+
+    @pytest.mark.asyncio
+    async def test_log_gone_from_github(self) -> None:
+        """An expired log is GitHub's 404, raised as for any other request."""
+        from mcp_github_crunchtools.errors import NotFoundError
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        backend = _LogBackend(jobs=[_failed_job(2)], logs={})
+
+        with _patch_transport(backend), pytest.raises(NotFoundError):
+            await get_failed_job_logs(owner="o", repo="r", run_id=77)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status_code", [301, 302, 307, 308])
+    async def test_storage_redirect_is_not_followed(self, status_code: int) -> None:
+        """The storage host cannot send the download on to a third host."""
+        from mcp_github_crunchtools.errors import GitHubApiError
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        backend = _LogBackend(
+            jobs=[_failed_job(2)], logs={2: _log_lines(5)}, storage_status=status_code
+        )
+
+        with _patch_transport(backend), pytest.raises(GitHubApiError, match="Download failed"):
+            await get_failed_job_logs(owner="o", repo="r", run_id=77)
+
+        assert len(backend.sent_to(LOG_HOST)) == 1
+        assert backend.sent_to(SECOND_HOP_HOST) == []
+
+    @pytest.mark.asyncio
+    async def test_failed_job_counts_are_marked_partial_past_the_job_cap(self) -> None:
+        """With more jobs than are examined, the result says its counts are partial."""
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        page = _mock_response(
+            json_data={
+                "total_count": 1000,
+                "jobs": [{"id": n + 1, "conclusion": "success"} for n in range(100)],
+            },
+        )
+
+        with _patch_client(page):
+            result = await get_failed_job_logs(owner="o", repo="r", run_id=77)
+
+        assert result["failed_job_count"] == 0
+        assert result["jobs_truncated"] is True
+        assert result["truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_storage_error_does_not_leak_the_signed_url(self) -> None:
+        from mcp_github_crunchtools.errors import GitHubApiError
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        backend = _LogBackend(
+            jobs=[_failed_job(2)],
+            logs={2: f"<Error>AuthenticationFailed {SIGNATURE}</Error>".encode()},
+            storage_status=403,
+        )
+
+        with _patch_transport(backend), pytest.raises(GitHubApiError) as exc_info:
+            await get_failed_job_logs(owner="o", repo="r", run_id=77)
+
+        assert str(exc_info.value) == "GitHub API error 403: Download failed"
+
+    @pytest.mark.asyncio
+    async def test_download_larger_than_the_limit_is_abandoned(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mcp_github_crunchtools.client as client_mod
+        from mcp_github_crunchtools.errors import GitHubApiError
+        from mcp_github_crunchtools.tools import get_failed_job_logs
+
+        monkeypatch.setattr(client_mod, "MAX_DOWNLOAD_SIZE", 1024)
+        backend = _LogBackend(jobs=[_failed_job(2)], logs={2: _log_lines(500)})
+
+        with _patch_transport(backend), pytest.raises(GitHubApiError, match="too large"):
+            await get_failed_job_logs(owner="o", repo="r", run_id=77)
+
+    @pytest.mark.asyncio
+    async def test_api_answer_that_is_not_a_redirect_is_refused(self) -> None:
+        """The log endpoint answering 200 itself is not treated as a log."""
+        from mcp_github_crunchtools.client import get_client
+        from mcp_github_crunchtools.errors import GitHubApiError
+
+        resp = _mock_response(status_code=200, text="not a redirect", content_type="text/plain")
+
+        with _patch_client(resp), pytest.raises(GitHubApiError, match="Expected a redirect"):
+            await get_client().get_redirected_tail("/repos/o/r/actions/jobs/2/logs", 1024)
+
+
+class TestReleaseTools:
+    """Tests for release tools."""
+
+    @pytest.mark.asyncio
+    async def test_create_release_minimal(self) -> None:
+        from mcp_github_crunchtools.tools import create_release
+
+        resp = _mock_response(
+            status_code=201,
+            json_data={
+                "id": 501,
+                "tag_name": "v1.2.0",
+                "name": "v1.2.0",
+                "html_url": "https://github.com/o/r/releases/tag/v1.2.0",
+                "draft": False,
+                "prerelease": False,
+                "assets": ["dropped"],
+            },
+        )
+
+        with _patch_client(resp) as mock_client:
+            result = await create_release(owner="o", repo="r", tag_name="v1.2.0")
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["method"] == "POST"
+            assert call.kwargs["url"] == "/repos/o/r/releases"
+            assert call.kwargs["json"] == {
+                "tag_name": "v1.2.0",
+                "body": "",
+                "draft": False,
+                "prerelease": False,
+                "generate_release_notes": False,
+            }
+
+        assert result == {
+            "id": 501,
+            "tag_name": "v1.2.0",
+            "name": "v1.2.0",
+            "html_url": "https://github.com/o/r/releases/tag/v1.2.0",
+            "draft": False,
+            "prerelease": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_create_release_full(self) -> None:
+        from mcp_github_crunchtools.tools import create_release
+
+        resp = _mock_response(status_code=201, json_data={"id": 502, "draft": True})
+
+        with _patch_client(resp) as mock_client:
+            await create_release(
+                owner="o",
+                repo="r",
+                tag_name="v2.0.0-rc.1",
+                target_commitish="release/2.0",
+                name="  2.0.0 release candidate  ",
+                body="## Added\n- widgets",
+                draft=True,
+                prerelease=True,
+                generate_release_notes=True,
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["json"] == {
+                "tag_name": "v2.0.0-rc.1",
+                "target_commitish": "release/2.0",
+                "name": "2.0.0 release candidate",
+                "body": "## Added\n- widgets",
+                "draft": True,
+                "prerelease": True,
+                "generate_release_notes": True,
+            }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("blank", [None, "", "   "])
+    async def test_create_release_blank_optionals_are_omitted(self, blank: str | None) -> None:
+        """Blank target_commitish and name mean "not given"."""
+        from mcp_github_crunchtools.tools import create_release
+
+        resp = _mock_response(status_code=201, json_data={"id": 503})
+
+        with _patch_client(resp) as mock_client:
+            await create_release(
+                owner="o", repo="r", tag_name="v1.2.0", target_commitish=blank, name=blank
+            )
+            body = mock_client.return_value.request.call_args.kwargs["json"]
+            assert "target_commitish" not in body
+            assert "name" not in body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            {"tag_name": ""},
+            {"tag_name": "v1.2.0 --force"},
+            {"tag_name": "../v1"},
+            {"tag_name": "v1.2.0", "target_commitish": "main;id"},
+            {"tag_name": "v1.2.0", "name": "n" * 257},
+            {"tag_name": "v1.2.0", "body": "b" * 65537},
+        ],
+    )
+    async def test_create_release_refuses_bad_input(self, arguments: dict[str, object]) -> None:
+        from mcp_github_crunchtools.tools import create_release
+
+        with _patch_client(_mock_response(json_data={})) as mock_client:
+            with pytest.raises(ValueError, match=r".+"):
+                await create_release(owner="o", repo="r", **arguments)
+            mock_client.return_value.request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_release_github_error(self) -> None:
+        """A tag that already has a release is GitHub's 422."""
+        from mcp_github_crunchtools.errors import GitHubApiError
+        from mcp_github_crunchtools.tools import create_release
+
+        resp = _mock_response(status_code=422, json_data={"message": "Validation Failed"})
+
+        with _patch_client(resp), pytest.raises(GitHubApiError, match="422: Validation Failed"):
+            await create_release(owner="o", repo="r", tag_name="v1.2.0")
 
 
 class TestFileTools:

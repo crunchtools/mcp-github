@@ -6,6 +6,38 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-12
+
+### Added
+
+- `create_pull_request_tool`: open a pull request, optionally as a draft; the
+  head may be `owner:branch` for a fork.
+- `merge_pull_request_tool`: merge, squash or rebase a pull request. `sha` is
+  the expected head commit; GitHub refuses the merge if the branch has moved.
+- `list_pull_request_comments_tool`: conversation comments, diff comments and
+  reviews in one chronological list, each tagged with its kind, author and id.
+  Each kind is capped at 300 items and the result says when one was cut.
+- `reply_to_review_comment_tool`: reply in the thread of a diff comment.
+- `get_workflow_run_tool`: one run's status, conclusion, head SHA and branch,
+  event and jobs, without logs.
+- `get_failed_job_logs_tool`: the last lines of the log of each failed job in
+  a run, with ANSI escapes and timestamps removed. Bounded to 1000 lines per
+  job, 5 jobs and 256 KiB per result; the result says when something was cut.
+- `create_release_tool`: create a release and, if needed, its tag.
+- README and SECURITY.md list the fine-grained token permission each tool
+  needs.
+
+### Security
+
+- The API client is created with `follow_redirects=False`. GitHub redirects a
+  job log to a pre-signed storage URL; that URL is fetched by a separate
+  client that has no token, over HTTPS only, and is never logged or put in an
+  error message.
+
+### Changed
+
+- README lists all 25 tools; it had stopped at the first eleven.
+
 ## [1.1.0] - 2026-10-10
 
 ### Added

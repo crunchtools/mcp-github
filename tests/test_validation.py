@@ -7,8 +7,11 @@ from pydantic import ValidationError
 
 from mcp_github_crunchtools.models import (
     CreateIssueCommentInput,
+    CreateReleaseInput,
     clamp_per_page,
     resolve_owner,
+    validate_commit_sha,
+    validate_head,
     validate_name,
     validate_positive_int,
     validate_ref,
@@ -173,3 +176,89 @@ class TestCreateIssueCommentInput:
     def test_extra_fields_rejected(self) -> None:
         with pytest.raises(ValidationError):
             CreateIssueCommentInput(body="hi", extra="x")  # type: ignore[call-arg]
+
+
+class TestValidateHead:
+    """Tests for the head of a new pull request."""
+
+    def test_branch_in_same_repo(self) -> None:
+        assert validate_head("feature/widgets") == "feature/widgets"
+
+    def test_branch_in_fork(self) -> None:
+        assert validate_head("  alice:fix/typo  ") == "alice:fix/typo"
+
+    def test_empty(self) -> None:
+        with pytest.raises(ValueError, match="must not be empty"):
+            validate_head("   ")
+
+    def test_fork_without_branch(self) -> None:
+        with pytest.raises(ValueError, match="head must not be empty"):
+            validate_head("alice:")
+
+    def test_fork_without_owner(self) -> None:
+        with pytest.raises(ValueError, match="head owner must not be empty"):
+            validate_head(":fix")
+
+    def test_injection_in_owner(self) -> None:
+        with pytest.raises(ValueError, match="only letters"):
+            validate_head("alice/../bob:fix")
+
+    def test_second_colon_lands_in_owner(self) -> None:
+        with pytest.raises(ValueError, match="only letters"):
+            validate_head("alice:bob:fix")
+
+    def test_path_traversal_in_branch(self) -> None:
+        with pytest.raises(ValueError, match="not a valid git ref"):
+            validate_head("alice:../main")
+
+
+class TestValidateCommitSha:
+    """Tests for the optional expected-head SHA."""
+
+    def test_sha1(self) -> None:
+        assert validate_commit_sha("a1" * 20) == "a1" * 20
+
+    def test_sha256(self) -> None:
+        assert validate_commit_sha("b2" * 32) == "b2" * 32
+
+    def test_upper_case_and_whitespace_normalized(self) -> None:
+        assert validate_commit_sha("  " + "AB" * 20 + " ") == "ab" * 20
+
+    @pytest.mark.parametrize("blank", [None, "", "   "])
+    def test_blank_means_not_given(self, blank: str | None) -> None:
+        assert validate_commit_sha(blank) is None
+
+    @pytest.mark.parametrize("bad", ["abc123", "a" * 41, "g" * 40, "main", "a" * 39 + "/"])
+    def test_not_a_full_sha(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="full 40 or 64 character commit SHA"):
+            validate_commit_sha(bad)
+
+
+class TestCreateReleaseInput:
+    """Tests for the release input model."""
+
+    def test_valid_minimal(self) -> None:
+        release = CreateReleaseInput()
+        assert release.name is None
+        assert release.body == ""
+
+    def test_valid_full(self) -> None:
+        release = CreateReleaseInput(name="v1.2.0", body="## Added")
+        assert release.name == "v1.2.0"
+        assert release.body == "## Added"
+
+    @pytest.mark.parametrize("blank", [None, "", "   "])
+    def test_blank_name_means_not_given(self, blank: str | None) -> None:
+        assert CreateReleaseInput(name=blank).name is None
+
+    def test_name_too_long(self) -> None:
+        with pytest.raises(ValidationError):
+            CreateReleaseInput(name="n" * 257)
+
+    def test_body_too_long(self) -> None:
+        with pytest.raises(ValidationError):
+            CreateReleaseInput(body="b" * 65537)
+
+    def test_extra_fields_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            CreateReleaseInput(name="v1", tag_name="v1")  # type: ignore[call-arg]

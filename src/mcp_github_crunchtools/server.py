@@ -11,15 +11,22 @@ from fastmcp import FastMCP
 from .tools import (
     create_issue,
     create_issue_comment,
+    create_pull_request,
+    create_release,
+    get_failed_job_logs,
     get_file_content,
     get_issue,
     get_pull_request,
     get_pull_request_checks,
     get_pull_request_diff,
+    get_workflow_run,
     list_issues,
+    list_pull_request_comments,
     list_pull_requests,
     list_repo_tree,
     list_workflow_runs,
+    merge_pull_request,
+    reply_to_review_comment,
     rerun_failed_jobs,
     rerun_workflow_run,
     search_code,
@@ -37,10 +44,11 @@ READ_ONLY = {"readOnlyHint": True}
 
 mcp = FastMCP(
     name="mcp-github",
-    version="1.1.0",
+    version="1.2.0",
     instructions=(
         "Secure MCP server for GitHub repositories: issues, pull requests "
-        "(diffs and CI checks), repository files, and code/issue search. "
+        "(open, review discussion, diffs, CI checks, merge), Actions runs and "
+        "failed-job logs, releases, repository files, and code/issue search. "
         "Works with github.com and GitHub Enterprise Server."
     ),
 )
@@ -309,6 +317,134 @@ async def update_pull_request_tool(
     )
 
 
+@mcp.tool()
+async def create_pull_request_tool(
+    repo: str,
+    title: str,
+    head: str,
+    base: str,
+    body: str = "",
+    draft: bool = False,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Open a GitHub pull request.
+
+    Args:
+        repo: Repository name
+        title: Pull request title (required, non-empty)
+        head: Branch holding the changes; "owner:branch" for a fork
+        base: Branch the changes should be merged into (e.g. "main")
+        body: Pull request description (Markdown)
+        draft: Open the pull request as a draft (default: false)
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        Created PR details (number, html_url, title, state, draft)
+    """
+    return await create_pull_request(
+        owner=owner,
+        repo=repo,
+        title=title,
+        head=head,
+        base=base,
+        body=body,
+        draft=draft,
+    )
+
+
+@mcp.tool()
+async def merge_pull_request_tool(
+    repo: str,
+    pull_number: int,
+    merge_method: str = "merge",
+    sha: str | None = None,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Merge a GitHub pull request.
+
+    Check get_pull_request_checks_tool first. Pass its ``head_sha`` as
+    ``sha`` to merge only the commit that was checked: GitHub refuses the
+    merge if the branch has moved since.
+
+    Args:
+        repo: Repository name
+        pull_number: Pull request number
+        merge_method: "merge", "squash", or "rebase" (default: merge)
+        sha: Full commit SHA the PR head must still be at (optional)
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        Merge result (merged, sha of the merge commit, message)
+    """
+    return await merge_pull_request(
+        owner=owner,
+        repo=repo,
+        pull_number=pull_number,
+        merge_method=merge_method,
+        sha=sha,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_pull_request_comments_tool(
+    repo: str,
+    pull_number: int,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """List everything said on a GitHub pull request, in one list.
+
+    Combines the PR's conversation comments (kind "issue_comment"), comments
+    on the diff (kind "review_comment", with path, line, review_id and
+    in_reply_to_id) and submitted reviews (kind "review", with state), oldest
+    first. Every item carries kind, id, author, created_at, body and html_url.
+
+    Each kind is capped at 300 items; ``truncated`` and ``truncated_kinds``
+    say when newer items were left out.
+
+    Args:
+        repo: Repository name
+        pull_number: Pull request number
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        {"pull_number", "total_count", "truncated", "truncated_kinds", "items"}
+    """
+    return await list_pull_request_comments(owner=owner, repo=repo, pull_number=pull_number)
+
+
+@mcp.tool()
+async def reply_to_review_comment_tool(
+    repo: str,
+    pull_number: int,
+    comment_id: int,
+    body: str,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Reply in the thread of a pull request review comment.
+
+    ``comment_id`` is the id of a "review_comment" item from
+    list_pull_request_comments_tool whose in_reply_to_id is empty; GitHub
+    rejects a reply to a reply, so answer the comment that started the thread.
+
+    Args:
+        repo: Repository name
+        pull_number: Pull request number
+        comment_id: ID of the review comment to reply to
+        body: Reply body (Markdown)
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        Created reply details (id, html_url, in_reply_to_id)
+    """
+    return await reply_to_review_comment(
+        owner=owner,
+        repo=repo,
+        pull_number=pull_number,
+        comment_id=comment_id,
+        body=body,
+    )
+
+
 @mcp.tool(annotations=READ_ONLY)
 async def get_file_content_tool(
     repo: str,
@@ -498,3 +634,106 @@ async def rerun_failed_jobs_tool(
         A confirmation dict: {"status": "rerun_requested", "run_id": run_id}
     """
     return await rerun_failed_jobs(owner=owner, repo=repo, run_id=run_id)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_workflow_run_tool(
+    repo: str,
+    run_id: int,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Get one GitHub Actions workflow run and its jobs (no logs).
+
+    Args:
+        repo: Repository name
+        run_id: Workflow run ID
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        The run's status, conclusion, head_sha, head_branch, event and
+        html_url, plus its jobs (id, name, status, conclusion)
+    """
+    return await get_workflow_run(owner=owner, repo=repo, run_id=run_id)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_failed_job_logs_tool(
+    repo: str,
+    run_id: int,
+    tail_lines: int = 200,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Get the end of the log of each failed job in a GitHub Actions run.
+
+    Returns the last ``tail_lines`` lines of every job that failed or timed
+    out, with ANSI escapes and timestamps removed, and the names of the steps
+    that failed. Logs are fetched for at most 5 failed jobs and all log text
+    together is capped at 256 KiB; ``truncated`` and ``failed_jobs_omitted``
+    say when something was cut. ``jobs_truncated`` means the run has more than
+    the 300 jobs examined, so the failed-job counts cover only those.
+
+    Args:
+        repo: Repository name
+        run_id: Workflow run ID
+        tail_lines: Lines to return from the end of each log (default 200,
+            max 1000)
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        {"run_id", "tail_lines", "failed_job_count", "failed_jobs_omitted",
+        "jobs_truncated", "truncated", "jobs": [{"id", "name", "conclusion",
+        "html_url", "failed_steps", "log", "log_lines", "truncated"}]}
+    """
+    return await get_failed_job_logs(
+        owner=owner,
+        repo=repo,
+        run_id=run_id,
+        tail_lines=tail_lines,
+    )
+
+
+@mcp.tool()
+async def create_release_tool(
+    repo: str,
+    tag_name: str,
+    target_commitish: str | None = None,
+    name: str | None = None,
+    body: str = "",
+    draft: bool = False,
+    prerelease: bool = False,
+    generate_release_notes: bool = False,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    """Create a GitHub release, creating its tag if the tag does not exist.
+
+    Publishing a release (draft=false) fires the repository's
+    ``on: release`` workflows, such as package and image publishing.
+
+    Args:
+        repo: Repository name
+        tag_name: Tag of the release (e.g. "v1.2.0")
+        target_commitish: Branch or commit SHA to tag when the tag does not
+            exist yet (default: the repository's default branch)
+        name: Release title (default: the tag name)
+        body: Release notes (Markdown)
+        draft: Create an unpublished draft (default: false)
+        prerelease: Mark the release as a prerelease (default: false)
+        generate_release_notes: Let GitHub generate the notes, with ``body``
+            in front of them (default: false)
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+
+    Returns:
+        Created release details (id, tag_name, name, html_url, draft,
+        prerelease)
+    """
+    return await create_release(
+        owner=owner,
+        repo=repo,
+        tag_name=tag_name,
+        target_commitish=target_commitish,
+        name=name,
+        body=body,
+        draft=draft,
+        prerelease=prerelease,
+        generate_release_notes=generate_release_notes,
+    )

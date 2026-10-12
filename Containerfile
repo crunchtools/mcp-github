@@ -27,15 +27,15 @@ FROM quay.io/hummingbird/python:latest
 
 # Labels for container metadata
 LABEL name="mcp-github-crunchtools" \
-      version="1.1.0" \
-      summary="Secure MCP server for GitHub issues, pull requests, files, and search" \
+      version="1.2.0" \
+      summary="Secure MCP server for GitHub issues, pull requests, Actions, releases, files, and search" \
       description="A security-focused MCP server for GitHub built on Red Hat UBI" \
       maintainer="crunchtools.com" \
       url="https://github.com/crunchtools/mcp-github" \
       io.k8s.display-name="MCP GitHub CrunchTools" \
       io.openshift.tags="mcp,github,devops" \
       org.opencontainers.image.source="https://github.com/crunchtools/mcp-github" \
-      org.opencontainers.image.description="Secure MCP server for GitHub issues, pull requests, files, and search" \
+      org.opencontainers.image.description="Secure MCP server for GitHub issues, pull requests, Actions, releases, files, and search" \
       org.opencontainers.image.licenses="AGPL-3.0-or-later"
 
 WORKDIR /app
