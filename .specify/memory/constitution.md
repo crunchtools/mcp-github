@@ -1,8 +1,8 @@
 # mcp-github-crunchtools Constitution
 
-> **Version:** 1.1.0
+> **Version:** 1.2.0
 > **Ratified:** 2026-06-14
-> **Amended:** 2026-10-02
+> **Amended:** 2026-10-12
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.24.0
 > **Profile:** MCP Server
@@ -19,13 +19,22 @@ restated here.
   the environment only. `GitHubApiError` scrubs it from messages, and
   `Config.__repr__()`/`__str__()` never expose it.
 - **Input limits:** Pydantic models with `extra="forbid"`; issue and PR
-  states are allowlisted (`open`, `closed`, `all`); owner and repo names are
+  states are allowlisted (`open`, `closed`, `all`), as are merge methods
+  (`merge`, `squash`, `rebase`); owner and repo names are
   checked for injection characters; git refs follow check-ref-format
-  rules (no `..`, `//` or leading/trailing `.` or `/`). `NotFoundError`
+  rules (no `..`, `//` or leading/trailing `.` or `/`); an expected head SHA
+  is a full 40 or 64 character hex SHA. `NotFoundError`
   truncates long identifiers.
 - **API:** `Authorization: Bearer` header, never the URL; the
   `X-GitHub-Api-Version` header is pinned to `2022-11-28`; path parameters
   are URL-encoded; requests time out after 30s; responses are capped at 10MB.
+- **Redirects:** the API client follows none. A job log, which GitHub serves
+  as a redirect to a pre-signed storage URL, is fetched by a separate client
+  that has no token, over HTTPS to a named host only, streamed, with only its
+  tail kept. The signed URL is never logged or put in an error message.
+- **Result caps:** tools that gather several pages say when they cut:
+  300 items per kind for pull request comments, 300 jobs per run, and for
+  failed-job logs 1000 lines per job, 5 jobs and 256 KiB per result.
 - **Surface:** pure API wrappers. No filesystem access, shell execution or
   code evaluation.
 
@@ -42,8 +51,9 @@ The server works with github.com and GitHub Enterprise Server:
 
 ## Tool Groups
 
-Issues, pull requests, Actions, files and search. Client error handling is
-tested for 401, 404, 429 and 204 responses in `TestClientErrorHandling`.
+Issues, pull requests, Actions, releases, files and search: 25 tools, of which
+14 only read. Client error handling is tested for 401, 404, 429 and 204
+responses in `TestClientErrorHandling`.
 
 ## Instance
 
@@ -62,3 +72,4 @@ tested for 401, 404, 429 and 204 responses in `TestClientErrorHandling`.
 | 1.0.0 | 2026-06-14 | Initial constitution (ported from mcp-gitlab-crunchtools) |
 | 1.0.1 | 2026-09-25 | Inherit constitution v1.17.0 (Gatehouse gates) |
 | 1.1.0 | 2026-10-02 | Manifest under constitution v1.18.0: profile restatement removed, mcp-github specifics kept; `..` rule moved from file paths to git refs to match the code |
+| 1.2.0 | 2026-10-12 | Seven tools for pull requests, Actions runs and logs, and releases (spec 001): redirect handling, result caps, merge-method and SHA validation, releases tool group |
