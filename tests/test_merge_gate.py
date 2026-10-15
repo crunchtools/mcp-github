@@ -403,6 +403,34 @@ class TestMergeGate:
 
         assert "protected but its protection is not shown" in message
 
+    async def test_branch_404_refused_not_treated_as_unprotected(self) -> None:
+        github = MockGitHub(check_runs=[run("test")], fail={"classic": (404, "Branch not found")})
+
+        message = await refused(github, allow_no_required_checks=True)
+
+        assert "cannot read the branch protection" in message
+
+    async def test_second_pr_read_failing_is_not_merged(self) -> None:
+        from mcp_github_crunchtools.errors import UserError
+
+        github = MockGitHub(rules=[ruleset("test")], check_runs=[run("test")])
+        # The first read is the real one (it counts pull_reads); every later
+        # read fails.
+        replies: list[Callable[[httpx.Request], httpx.Response]] = [
+            github._pull,
+            lambda _r: httpx.Response(502, json={"message": "Bad gateway"}),
+        ]
+
+        def pull(request: httpx.Request) -> httpx.Response:
+            return replies[github.pull_reads](request)
+
+        github.routes.insert(0, ("pull", "GET", r"/repos/o/r/pulls/12", pull))
+
+        with pytest.raises(UserError):
+            await merge(github)
+
+        assert github.merges == []
+
     async def test_base_branch_is_encoded(self) -> None:
         github = MockGitHub(base="release/1.2", rules=[ruleset("test")], check_runs=[run("test")])
 
