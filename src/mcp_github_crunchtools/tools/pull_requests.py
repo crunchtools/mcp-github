@@ -414,22 +414,27 @@ async def _classic_checks(
 ) -> set[RequiredCheck]:
     """Required status checks from a branch's classic protection.
 
-    A 404 means the branch has none. Any other error refuses the merge: a
-    token that cannot read the protection cannot tell "no required checks"
-    from "checks it was not shown".
+    Read from the branch itself, which shows its protection to any token
+    that can read the repository; the protection endpoint needs
+    Administration: read, which a merging token should not hold. Any error,
+    or a protected branch whose protection is not shown, refuses the merge:
+    the gate cannot tell "no required checks" from "checks it was not shown".
     """
     branch = quote(base, safe="")
     try:
-        classic = await client.get(
-            f"/repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks"
-        )
-    except NotFoundError:
-        return set()
-    except GitHubApiError as e:
+        info = await client.get(f"/repos/{owner}/{repo}/branches/{branch}")
+    except (GitHubApiError, NotFoundError, PermissionDeniedError, RateLimitError) as e:
         raise MergeRefusedError(
-            f"Refusing to merge: cannot read the branch protection of {base!r} ({e}). "
-            "The token needs Administration: read to see its required checks."
+            f"Refusing to merge: cannot read the branch protection of {base!r} ({e})"
         ) from e
+    if not info.get("protected"):
+        return set()
+    protection = info.get("protection")
+    if not isinstance(protection, dict):
+        raise MergeRefusedError(
+            f"Refusing to merge: branch {base!r} is protected but its protection is not shown"
+        )
+    classic = protection.get("required_status_checks") or {}
 
     # "checks" carries the app each context must come from; older protection
     # has only "contexts".

@@ -60,7 +60,7 @@ permission the tool needs (see [Token permissions](#token-permissions)).
 | `create_pull_request_tool` | Open a pull request, optionally as a draft (*write*) | Pull requests: write |
 | `update_pull_request_tool` | Edit, close or reopen a pull request; does not merge (*write*) | Pull requests: write |
 | `reply_to_review_comment_tool` | Reply in the thread of a diff comment (*write*) | Pull requests: write |
-| `merge_pull_request_tool` | Merge, squash or rebase a pull request, only once the base branch's required checks are green on its head (see [The merge gate](#the-merge-gate)) (*write*) | Contents: write; Pull requests, Administration and Commit statuses: read |
+| `merge_pull_request_tool` | Merge, squash or rebase a pull request, only once the base branch's required checks are green on its head (see [The merge gate](#the-merge-gate)) (*write*) | Contents: write; Pull requests and Commit statuses: read |
 
 ### Actions (6 tools)
 
@@ -191,7 +191,6 @@ For a fine-grained personal access token, the repository permissions are:
 | Permission | Read is enough for | Write is needed for |
 |------------|--------------------|---------------------|
 | Metadata | every tool (GitHub grants it with any other permission) | — |
-| Administration | `merge_pull_request_tool` (reads the branch's required checks) | — |
 | Contents | `get_file_content_tool`, `list_repo_tree_tool` | `merge_pull_request_tool`, `create_release_tool` |
 | Issues | `list_issues_tool`, `get_issue_tool` | `create_issue_tool`, `update_issue_tool`, `create_issue_comment_tool` |
 | Pull requests | `merge_pull_request_tool`, `list_pull_requests_tool`, `get_pull_request_tool`, `get_pull_request_diff_tool`, `get_pull_request_checks_tool`, `list_pull_request_comments_tool` | `create_pull_request_tool`, `update_pull_request_tool`, `reply_to_review_comment_tool`, `create_issue_comment_tool` on a PR |
@@ -229,9 +228,10 @@ merges it:
 1. reads the pull request's base branch and head SHA, and refuses if `sha`
    was given and the head has moved;
 2. collects the base branch's required status checks from its active
-   rulesets and its classic branch protection. A 404 from branch protection
-   means there is none; any other error there (a 403 for a token without
-   Administration: read, say) refuses the merge rather than count as none;
+   rulesets and its classic branch protection, read from the branch itself
+   so no Administration permission is needed. An error reading either, or a
+   protected branch whose protection is not shown, refuses the merge rather
+   than count as none;
 3. refuses if no check is required, unless `allow_no_required_checks=True`;
 4. requires, for every required check on the head commit, a completed check
    run of that name concluding `success`, `skipped` or `neutral` (the most

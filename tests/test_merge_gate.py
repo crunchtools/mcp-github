@@ -90,7 +90,7 @@ class MockGitHub:
             ("merge", "PUT", re.escape(MERGE_PATH), self._merge),
             ("pull", "GET", r"/repos/o/r/pulls/12", self._pull),
             ("rules", "GET", r"/repos/o/r/rules/branches/.+", self._rules),
-            ("classic", "GET", r".+/protection/required_status_checks", self._classic),
+            ("classic", "GET", r"/repos/o/r/branches/.+", self._classic),
             ("check_runs", "GET", rf"/repos/o/r/commits/{HEAD}/check-runs", self._check_runs),
             ("statuses", "GET", rf"/repos/o/r/commits/{HEAD}/status", self._statuses),
         ]
@@ -130,7 +130,15 @@ class MockGitHub:
         return httpx.Response(200, json=items, headers={"link": link} if more else {})
 
     def _classic(self, _request: httpx.Request) -> httpx.Response:
-        return httpx.Response(self.classic[0], json=self.classic[1])
+        # ``classic`` is the required-status-checks object and its status; a
+        # 404 stands for an unprotected branch, as the old endpoint said it.
+        code, checks = self.classic
+        if code == 404:
+            return httpx.Response(200, json={"name": self.base, "protected": False})
+        if code != 200:
+            return httpx.Response(code, json=checks)
+        protection = {"enabled": True, "required_status_checks": checks}
+        return httpx.Response(200, json={"protected": True, "protection": protection})
 
     def _check_runs(self, request: httpx.Request) -> httpx.Response:
         items, _ = self._page(request, self.check_runs)
@@ -371,7 +379,29 @@ class TestMergeGate:
         message = await refused(github, allow_no_required_checks=True)
 
         assert "cannot read the branch protection" in message
-        assert "Administration: read" in message
+
+    async def test_protection_read_from_branch_not_admin_endpoint(self) -> None:
+        github = MockGitHub(rules=[ruleset("test")], check_runs=[run("test")])
+
+        await merge(github)
+
+        assert not any("/protection" in r.url.path for r in github.requests)
+
+    async def test_protected_branch_without_protection_shown_refused(self) -> None:
+        github = MockGitHub(check_runs=[run("test")])
+        github.routes.insert(
+            0,
+            (
+                "classic",
+                "GET",
+                r"/repos/o/r/branches/.+",
+                lambda _r: httpx.Response(200, json={"protected": True}),
+            ),
+        )
+
+        message = await refused(github, allow_no_required_checks=True)
+
+        assert "protected but its protection is not shown" in message
 
     async def test_base_branch_is_encoded(self) -> None:
         github = MockGitHub(base="release/1.2", rules=[ruleset("test")], check_runs=[run("test")])

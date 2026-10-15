@@ -35,8 +35,7 @@ claude mcp add mcp-github-crunchtools \
 3. Grant read access to repository contents, issues, pull requests, and
    Actions. Add write only for the write tools you use: Issues and Pull
    requests for commenting, opening and updating; Contents for
-   `merge_pull_request_tool` (which also reads branch protection, so needs
-   Administration: read) and `create_release_tool`; Actions for
+   `merge_pull_request_tool` and `create_release_tool`; Actions for
    `trigger_workflow_tool` and `rerun_*`. The per-tool table is in README.md
    under "Token permissions".
 4. Copy the token immediately (shown only once)

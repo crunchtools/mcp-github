@@ -200,10 +200,10 @@ would otherwise merge a red pull request.
   the head is refused.
 - Required checks come from the branch's active rulesets
   (`GET /repos/{owner}/{repo}/rules/branches/{branch}`) and its classic
-  protection (`.../branches/{branch}/protection/required_status_checks`). A
-  404 from the latter means no classic protection. Any other error refuses
-  the merge: a 403 means the token cannot see the checks, not that there
-  are none.
+  protection, as shown on the branch (`GET .../branches/{branch}`), which
+  needs no Administration permission. An error reading either, or a
+  protected branch whose protection is not shown, refuses the merge: the
+  gate cannot tell that from there being no checks.
 - No required checks at all refuses the merge unless the caller passes
   `allow_no_required_checks=True`.
 - Each required check needs, on the head commit, a completed check run of
@@ -279,7 +279,7 @@ changes in.
 | `list_pull_requests_tool`, `get_pull_request_tool`, `get_pull_request_diff_tool`, `list_pull_request_comments_tool` | Pull requests: read |
 | `get_pull_request_checks_tool` | Pull requests: read, Commit statuses: read (see below) |
 | `create_pull_request_tool`, `update_pull_request_tool`, `reply_to_review_comment_tool` | Pull requests: write |
-| `merge_pull_request_tool` | Contents: write; Pull requests, Administration and Commit statuses: read (see 2.7) |
+| `merge_pull_request_tool` | Contents: write; Pull requests and Commit statuses: read (see 2.7) |
 | `create_release_tool` | Contents: write |
 | `list_workflow_runs_tool`, `get_workflow_run_tool`, `get_failed_job_logs_tool` | Actions: read |
 | `trigger_workflow_tool`, `rerun_workflow_run_tool`, `rerun_failed_jobs_tool` | Actions: write |
@@ -298,7 +298,8 @@ For minimum privilege, grant only:
 - Read on Contents, Issues, Pull requests and Actions — if you only need to read
 - Add write on Issues and Pull requests — to comment, open and update
 - Add write on Contents — only where the agent is meant to merge or release
-  (merging also needs Administration: read, for the merge gate)
+  (merging needs no Administration permission: the gate reads branch
+  protection from the branch itself)
 
 ## 4. Supply Chain Security
 

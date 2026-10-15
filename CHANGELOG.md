@@ -27,10 +27,10 @@ All notable changes to this project are documented here. The format follows
   skipped or neutral) or a successful status on the head commit, or the
   merge is refused with each offending check named. A branch with no
   required checks is refused unless `allow_no_required_checks=True`, and a
-  branch protection that cannot be read (other than 404) is refused. The
-  merge is always pinned to the checked head SHA. It now needs
-  Administration: read, Pull requests: read and Commit statuses: read as
-  well as Contents: write.
+  branch protection that cannot be read is refused. Classic protection is
+  read from the branch itself, so no Administration permission is needed.
+  The merge is always pinned to the checked head SHA. It now needs Pull
+  requests: read and Commit statuses: read as well as Contents: write.
 
 ### Security
 

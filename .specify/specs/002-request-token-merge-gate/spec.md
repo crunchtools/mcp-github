@@ -52,7 +52,7 @@ Before `PUT /repos/{owner}/{repo}/pulls/{n}/merge`:
 |------|---------|--------------|
 | 1 | `GET .../pulls/{n}` | caller `sha` is not the head; head or base missing |
 | 2a | `GET .../rules/branches/{base}` (paged) | — |
-| 2b | `GET .../branches/{base}/protection/required_status_checks` | any error but 404 (404 = none) |
+| 2b | `GET .../branches/{base}` (`protection.required_status_checks`) | any error, or `protected` with no `protection` shown |
 | 3 | — | no required checks, unless `allow_no_required_checks=True` |
 | 4 | `GET .../commits/{head}/check-runs` and `.../status` (paged) | a required check is missing, pending or failed |
 | 5 | `GET .../pulls/{n}` again | head or base changed since step 1 |
