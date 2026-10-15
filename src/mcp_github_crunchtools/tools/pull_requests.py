@@ -5,9 +5,17 @@ discussing GitHub pull requests.
 """
 
 from typing import Any
+from urllib.parse import quote
 
 from ..client import GitHubClient, get_client
-from ..errors import ValidationError
+from ..errors import (
+    GitHubApiError,
+    MergeRefusedError,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitError,
+    ValidationError,
+)
 from ..models import (
     MAX_PER_PAGE,
     MERGE_METHODS,
@@ -29,6 +37,17 @@ DIFF_ACCEPT = "application/vnd.github.diff"
 # MAX_PER_PAGE per request up to this many items, so one call returns at most
 # three times this and costs at most nine requests.
 MAX_PR_COMMENTS_PER_KIND = 3 * MAX_PER_PAGE
+
+# The merge gate reads every page of rules, check runs and statuses up to this
+# many pages each. A longer list is not judged in part: the merge is refused.
+MERGE_GATE_MAX_PAGES = 10
+
+# Check-run conclusions that satisfy a required check.
+PASSING_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
+
+# A required check: its context (check-run name or status context) and, when
+# the rule names one, the id of the GitHub App that must report it.
+RequiredCheck = tuple[str, int | None]
 
 
 async def list_pull_requests(
@@ -338,30 +357,239 @@ async def create_pull_request(
     }
 
 
+async def _read_all(client: GitHubClient, path: str, key: str | None) -> list[dict[str, Any]]:
+    """Read every page of a list for the merge gate, or refuse.
+
+    ``key`` names the list inside an object response (``check_runs``,
+    ``statuses``), whose length is known from ``total_count``; None means
+    the response is a bare list, paged by its Link header.
+    """
+    collected: list[dict[str, Any]] = []
+    for page in range(1, MERGE_GATE_MAX_PAGES + 1):
+        try:
+            result = await client.get(path, params={"per_page": MAX_PER_PAGE, "page": page})
+        except (GitHubApiError, NotFoundError, PermissionDeniedError, RateLimitError) as e:
+            raise MergeRefusedError(f"Refusing to merge: could not read {path}: {e}") from e
+        if key is None:
+            items = result.get("items") or []
+            more = "next_page" in result.get("pagination", {})
+        else:
+            items = result.get(key) or []
+            more = bool(items) and len(collected) + len(items) < (result.get("total_count") or 0)
+        collected.extend(item for item in items if isinstance(item, dict))
+        if not more:
+            return collected
+    raise MergeRefusedError(
+        f"Refusing to merge: {path} has more than {MERGE_GATE_MAX_PAGES} pages; "
+        "the checks cannot be judged in full"
+    )
+
+
+def _app_id(value: object) -> int | None:
+    """An app id from a rule, or None when any source may report the check.
+
+    Classic branch protection uses -1 (and rulesets omit the field) for "any".
+    """
+    return value if isinstance(value, int) and value > 0 else None
+
+
+async def _ruleset_checks(
+    client: GitHubClient, owner: str, repo: str, branch: str
+) -> set[RequiredCheck]:
+    """Required status checks from the rulesets active on a branch."""
+    required: set[RequiredCheck] = set()
+    rules = await _read_all(client, f"/repos/{owner}/{repo}/rules/branches/{branch}", None)
+    for rule in rules:
+        if rule.get("type") != "required_status_checks":
+            continue
+        for check in (rule.get("parameters") or {}).get("required_status_checks") or []:
+            context = check.get("context")
+            if isinstance(context, str) and context:
+                required.add((context, _app_id(check.get("integration_id"))))
+    return required
+
+
+async def _classic_checks(
+    client: GitHubClient, owner: str, repo: str, base: str
+) -> set[RequiredCheck]:
+    """Required status checks from a branch's classic protection.
+
+    A 404 means the branch has none. Any other error refuses the merge: a
+    token that cannot read the protection cannot tell "no required checks"
+    from "checks it was not shown".
+    """
+    branch = quote(base, safe="")
+    try:
+        classic = await client.get(
+            f"/repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks"
+        )
+    except NotFoundError:
+        return set()
+    except GitHubApiError as e:
+        raise MergeRefusedError(
+            f"Refusing to merge: cannot read the branch protection of {base!r} ({e}). "
+            "The token needs Administration: read to see its required checks."
+        ) from e
+
+    # "checks" carries the app each context must come from; older protection
+    # has only "contexts".
+    pairs = [(c.get("context"), _app_id(c.get("app_id"))) for c in classic.get("checks") or []]
+    if not pairs:
+        pairs = [(context, None) for context in classic.get("contexts") or []]
+    return {(context, app) for context, app in pairs if isinstance(context, str) and context}
+
+
+async def _required_checks(
+    client: GitHubClient, owner: str, repo: str, base: str
+) -> set[RequiredCheck]:
+    """Every status check the base branch requires, from rulesets and classic
+    branch protection."""
+    rulesets = await _ruleset_checks(client, owner, repo, quote(base, safe=""))
+    return rulesets | await _classic_checks(client, owner, repo, base)
+
+
+def _judge_run(run: dict[str, Any]) -> str | None:
+    """Why a check run does not satisfy a required check, or None if it does."""
+    if run.get("status") != "completed":
+        return f"pending (check run {run.get('status')})"
+    conclusion = run.get("conclusion")
+    if conclusion not in PASSING_CONCLUSIONS:
+        return f"failed (check run concluded {conclusion})"
+    return None
+
+
+def _index_runs(check_runs: list[dict[str, Any]]) -> dict[RequiredCheck, dict[str, Any]]:
+    """The most recent (highest id) check run per (name, app id) and per
+    (name, None), the latter for checks any app may report."""
+    index: dict[RequiredCheck, dict[str, Any]] = {}
+    for run in sorted(check_runs, key=lambda r: r.get("id") or 0):
+        name = run.get("name")
+        if not isinstance(name, str):
+            continue
+        app_id = (run.get("app") or {}).get("id")
+        index[(name, None)] = run
+        if isinstance(app_id, int):
+            index[(name, app_id)] = run
+    return index
+
+
+def _judge_check(
+    check: RequiredCheck,
+    runs: dict[RequiredCheck, dict[str, Any]],
+    statuses: dict[str, dict[str, Any]],
+) -> str | None:
+    """Why a required check is not satisfied, or None if it is.
+
+    A check run named after the context decides; if several share the name,
+    the most recent (highest id) does. When the rule names an app, only that
+    app's runs count and a commit status cannot stand in. Otherwise, with no
+    such run, the commit status of that context decides.
+    """
+    context, app_id = check
+    run = runs.get(check)
+    if run is not None:
+        return _judge_run(run)
+
+    status = statuses.get(context) if app_id is None else None
+    if status is None:
+        source = f" from app {app_id}" if app_id is not None else ""
+        return f"missing (no check run{source} or status on the head commit)"
+    match status.get("state"):
+        case "success":
+            return None
+        case "pending":
+            return "pending (status pending)"
+        case state:
+            return f"failed (status {state})"
+
+
+async def _gate_problems(
+    client: GitHubClient,
+    owner: str,
+    repo: str,
+    head_sha: str,
+    required: set[RequiredCheck],
+) -> list[str]:
+    """One line per required check that the head commit does not satisfy."""
+    check_runs = await _read_all(
+        client, f"/repos/{owner}/{repo}/commits/{head_sha}/check-runs", "check_runs"
+    )
+    raw_statuses = await _read_all(
+        client, f"/repos/{owner}/{repo}/commits/{head_sha}/status", "statuses"
+    )
+    # The combined status lists the latest status per context, but its order
+    # is not relied on: where a context repeats, the newest (highest id) wins.
+    statuses: dict[str, dict[str, Any]] = {}
+    for status in sorted(raw_statuses, key=lambda s: s.get("id") or 0):
+        if isinstance(status.get("context"), str):
+            statuses[status["context"]] = status
+
+    runs = _index_runs(check_runs)
+    problems = []
+    for check in sorted(required, key=lambda c: (c[0], c[1] or 0)):
+        reason = _judge_check(check, runs, statuses)
+        if reason:
+            problems.append(f"{check[0]}: {reason}")
+    return problems
+
+
+async def _head_and_base(
+    client: GitHubClient, owner: str, repo: str, pull_number: int
+) -> tuple[str, str]:
+    """The PR's current head SHA (lower case) and base branch."""
+    pr = await client.get(f"/repos/{owner}/{repo}/pulls/{pull_number}")
+    head_sha = validate_commit_sha((pr.get("head") or {}).get("sha"), "head sha")
+    base = (pr.get("base") or {}).get("ref")
+    if not head_sha or not isinstance(base, str) or not base:
+        raise MergeRefusedError("Refusing to merge: could not resolve the PR head and base")
+    return head_sha, validate_ref(base, "base")
+
+
 async def merge_pull_request(
     owner: str | None,
     repo: str,
     pull_number: int,
     merge_method: str = "merge",
     sha: str | None = None,
+    allow_no_required_checks: bool = False,
 ) -> dict[str, Any]:
-    """Merge a pull request.
+    """Merge a pull request, only once its required checks are green.
 
-    GitHub answers 405 when the pull request cannot be merged (failing
-    required checks, conflicts, a draft) and 409 when ``sha`` is given and is
-    no longer the head of the branch. Both surface as a GitHubApiError that
-    carries GitHub's message.
+    The tool enforces the base branch's required status checks itself,
+    before asking GitHub to merge. GitHub lets an organization owner, or an
+    actor on a ruleset's bypass list, merge past failing required checks;
+    with such a token GitHub would merge a red PR, so the check cannot be
+    left to GitHub.
+
+    1. Read the PR's base branch and current head SHA. If ``sha`` is given
+       and is not the head, refuse.
+    2. Collect the required checks of the base branch from its rulesets and
+       its classic branch protection. If the protection cannot be read
+       (other than a 404, which means none), refuse.
+    3. With no required checks, refuse unless ``allow_no_required_checks``.
+    4. Each required check must have, on the head commit, a completed check
+       run concluding success, skipped or neutral (the most recent run of
+       that name), or a commit status of success. Otherwise refuse, listing
+       each check and why.
+    5. Re-read the PR and refuse if its head or base changed meanwhile, then
+       merge with the head SHA pinned, so a later push makes GitHub refuse
+       the merge (409) rather than merge unchecked code.
 
     Args:
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
         repo: Repository name
         pull_number: Pull request number
         merge_method: "merge", "squash", or "rebase"
-        sha: Full commit SHA the PR head must still be at for the merge to
-            happen (optional)
+        sha: Full commit SHA the PR head must still be at (optional)
+        allow_no_required_checks: Merge even if the base branch requires no
+            checks (default False: refuse)
 
     Returns:
-        Merge result (merged, sha of the merge commit, message)
+        Merge result (merged, sha of the merge commit, message), the
+        ``head_sha`` that was checked and merged, and ``required_checks``
+
+    Raises:
+        MergeRefusedError: If the gate refuses the merge
     """
     owner = resolve_owner(owner)
     repo = validate_name(repo, "repo")
@@ -369,21 +597,47 @@ async def merge_pull_request(
     if merge_method not in MERGE_METHODS:
         allowed = ", ".join(sorted(MERGE_METHODS))
         raise ValidationError(f"Invalid merge_method. Allowed: {allowed}")
-
-    json_data: dict[str, Any] = {"merge_method": merge_method}
     expected_head = validate_commit_sha(sha)
-    if expected_head:
-        json_data["sha"] = expected_head
 
     client = get_client()
+    head_sha, base = await _head_and_base(client, owner, repo, pull_number)
+    if expected_head and expected_head != head_sha:
+        raise MergeRefusedError(
+            f"Refusing to merge: the PR head is {head_sha}, not the expected {expected_head}"
+        )
+
+    required = await _required_checks(client, owner, repo, base)
+    if not required and not allow_no_required_checks:
+        raise MergeRefusedError(
+            f"Refusing to merge: branch {base!r} requires no status checks. "
+            "Pass allow_no_required_checks=True to merge without any."
+        )
+    if required:
+        problems = await _gate_problems(client, owner, repo, head_sha, required)
+        if problems:
+            raise MergeRefusedError(
+                f"Refusing to merge: required checks are not green on {head_sha}: "
+                + "; ".join(problems)
+            )
+
+    # The merge request pins the head but not the base. Re-read the PR so a
+    # retarget, or a push, during the gate is refused rather than merged into
+    # a branch whose checks were not the ones judged.
+    if await _head_and_base(client, owner, repo, pull_number) != (head_sha, base):
+        raise MergeRefusedError(
+            "Refusing to merge: the PR head or base changed while its checks were read"
+        )
+
     result = await client.put(
         f"/repos/{owner}/{repo}/pulls/{pull_number}/merge",
-        json_data=json_data,
+        json_data={"merge_method": merge_method, "sha": head_sha},
     )
     return {
         "merged": result.get("merged"),
         "sha": result.get("sha"),
         "message": result.get("message"),
+        "head_sha": head_sha,
+        "required_checks": sorted({context for context, _ in required}),
     }
 
 

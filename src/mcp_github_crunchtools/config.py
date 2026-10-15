@@ -14,6 +14,8 @@ from .errors import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
+_TRUE_VALUES = ("true", "1", "yes")
+
 
 class Config:
     """Secure configuration handling.
@@ -28,15 +30,21 @@ class Config:
         Raises:
             ConfigurationError: If required environment variables are missing or invalid.
         """
+        self._accept_request_token = (
+            os.environ.get("GITHUB_ACCEPT_REQUEST_TOKEN", "").strip().lower() in _TRUE_VALUES
+        )
+
         token = os.environ.get("GITHUB_TOKEN")
-        if not token:
+        if not token and not self._accept_request_token:
             raise ConfigurationError(
                 "GITHUB_TOKEN environment variable required. "
                 "Create a Personal Access Token at "
                 "https://github.com/settings/tokens"
             )
 
-        self._token = SecretStr(token)
+        # With GITHUB_ACCEPT_REQUEST_TOKEN on, an instance may have no token
+        # of its own and act only with the token each HTTP request carries.
+        self._token = SecretStr(token) if token else None
 
         api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
 
@@ -51,9 +59,7 @@ class Config:
             "127.0.0.1",
             "::1",
         ):
-            raise ConfigurationError(
-                "GITHUB_API_URL must use HTTPS for non-localhost URLs"
-            )
+            raise ConfigurationError("GITHUB_API_URL must use HTTPS for non-localhost URLs")
 
         self._api_base_url = api_url
 
@@ -76,17 +82,23 @@ class Config:
             case _:
                 self._ssl_verify = True
 
-        logger.info(
-            "Configuration loaded successfully (GitHub API: %s)", self._api_base_url
-        )
+        logger.info("Configuration loaded successfully (GitHub API: %s)", self._api_base_url)
 
     @property
-    def token(self) -> str:
-        """Get token value for API calls.
+    def token(self) -> str | None:
+        """Get the GITHUB_TOKEN value for API calls, or None if it is unset.
 
         Use sparingly - only when making actual API calls.
         """
-        return self._token.get_secret_value()
+        return self._token.get_secret_value() if self._token else None
+
+    @property
+    def accept_request_token(self) -> bool:
+        """Whether an incoming ``Authorization: Bearer`` header is used.
+
+        Set by GITHUB_ACCEPT_REQUEST_TOKEN; off by default.
+        """
+        return self._accept_request_token
 
     @property
     def api_base_url(self) -> str:

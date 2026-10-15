@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-14
+
+### Added
+
+- `GITHUB_ACCEPT_REQUEST_TOKEN` (default off): over HTTP, act with the token
+  in each request's `Authorization: Bearer <token>` header, the way GitHub's
+  hosted MCP server takes it, falling back to `GITHUB_TOKEN`. With it on,
+  `GITHUB_TOKEN` is optional. A malformed header is refused, never
+  forwarded; a call with no token at all fails before reaching GitHub.
+  stdio is unchanged.
+- `merge_pull_request_tool` takes `allow_no_required_checks` (default
+  False).
+
+### Changed
+
+- `merge_pull_request_tool` enforces the base branch's required status
+  checks itself before merging: from rulesets and classic branch
+  protection, every required check must have a passing check run (success,
+  skipped or neutral) or a successful status on the head commit, or the
+  merge is refused with each offending check named. A branch with no
+  required checks is refused unless `allow_no_required_checks=True`, and a
+  branch protection that cannot be read (other than 404) is refused. The
+  merge is always pinned to the checked head SHA. It now needs
+  Administration: read, Pull requests: read and Commit statuses: read as
+  well as Contents: write.
+
+### Security
+
+- An organization owner's token can bypass required checks on GitHub's
+  side; the merge gate closes that for this tool.
+- The request token is scrubbed from error messages like `GITHUB_TOKEN`,
+  and is passed per call, never stored on the shared HTTP client.
+
 ## [1.2.0] - 2026-10-12
 
 ### Added

@@ -1,8 +1,8 @@
 # mcp-github-crunchtools Constitution
 
-> **Version:** 1.2.0
+> **Version:** 1.3.0
 > **Ratified:** 2026-06-14
-> **Amended:** 2026-10-12
+> **Amended:** 2026-10-14
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.24.0
 > **Profile:** MCP Server
@@ -15,9 +15,17 @@ restated here.
 
 ## Security Model Specifics
 
-- **Credentials:** `GITHUB_TOKEN` (required), held as `SecretStr`, read from
-  the environment only. `GitHubApiError` scrubs it from messages, and
-  `Config.__repr__()`/`__str__()` never expose it.
+- **Credentials:** `GITHUB_TOKEN`, held as `SecretStr`, read from the
+  environment only; required unless `GITHUB_ACCEPT_REQUEST_TOKEN` is on, in
+  which case an HTTP request's `Authorization: Bearer <token>` is used for
+  that request (strict format, malformed refused, never stored on the shared
+  client). `GitHubApiError` scrubs both tokens from messages, and
+  `Config.__repr__()`/`__str__()` never expose the token.
+- **Merge gate:** `merge_pull_request` merges only when every required
+  status check of the base branch (rulesets and classic protection) passes
+  on the head commit, pinned to that head; it fails closed when checks
+  cannot be read, and when none are required unless the caller passes
+  `allow_no_required_checks=True`.
 - **Input limits:** Pydantic models with `extra="forbid"`; issue and PR
   states are allowlisted (`open`, `closed`, `all`), as are merge methods
   (`merge`, `squash`, `rebase`); owner and repo names are
@@ -73,3 +81,4 @@ responses in `TestClientErrorHandling`.
 | 1.0.1 | 2026-09-25 | Inherit constitution v1.17.0 (Gatehouse gates) |
 | 1.1.0 | 2026-10-02 | Manifest under constitution v1.18.0: profile restatement removed, mcp-github specifics kept; `..` rule moved from file paths to git refs to match the code |
 | 1.2.0 | 2026-10-12 | Seven tools for pull requests, Actions runs and logs, and releases (spec 001): redirect handling, result caps, merge-method and SHA validation, releases tool group |
+| 1.3.0 | 2026-10-14 | Per-request token (`GITHUB_ACCEPT_REQUEST_TOKEN`) and the merge gate (spec 002) |
