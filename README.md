@@ -60,7 +60,7 @@ permission the tool needs (see [Token permissions](#token-permissions)).
 | `create_pull_request_tool` | Open a pull request, optionally as a draft (*write*) | Pull requests: write |
 | `update_pull_request_tool` | Edit, close or reopen a pull request; does not merge (*write*) | Pull requests: write |
 | `reply_to_review_comment_tool` | Reply in the thread of a diff comment (*write*) | Pull requests: write |
-| `merge_pull_request_tool` | Merge, squash or rebase a pull request, optionally only at an expected head SHA (*write*) | Contents: write |
+| `merge_pull_request_tool` | Merge, squash or rebase a pull request, only once the base branch's required checks are green on its head (see [The merge gate](#the-merge-gate)) (*write*) | Contents: write; Pull requests and Commit statuses: read |
 
 ### Actions (6 tools)
 
@@ -136,11 +136,38 @@ podman run -e GITHUB_TOKEN=your_token \
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GITHUB_TOKEN` | Yes | — | GitHub Personal Access Token |
+| `GITHUB_TOKEN` | Yes, unless `GITHUB_ACCEPT_REQUEST_TOKEN` is on | — | GitHub Personal Access Token |
+| `GITHUB_ACCEPT_REQUEST_TOKEN` | No | off | `true`, `1` or `yes`: over HTTP, act with the token in each request's `Authorization: Bearer` header (see [Per-request token](#per-request-token)) |
 | `GITHUB_API_URL` | No | `https://api.github.com` | API base URL (set for GHES) |
 | `GITHUB_DEFAULT_ORG` | No | — | Default owner when a tool omits `owner` |
 | `SSL_CERT_FILE` | No | — | Custom CA bundle path, for self-hosted GHES with an internal CA |
 | `GITHUB_SSL_VERIFY` | No | `true` | Set `false` to disable TLS verification (not recommended) |
+
+### Per-request token
+
+GitHub's own hosted MCP server takes the caller's token on every HTTP
+request as `Authorization: Bearer <token>` and acts with it. With
+`GITHUB_ACCEPT_REQUEST_TOKEN=true` this server does the same, so a client
+configured for GitHub's server can point here instead with the same header.
+
+- Over the `streamable-http` or `sse` transport, a request carrying
+  `Authorization: Bearer <token>` is sent to GitHub with that token, for
+  that request only. Concurrent requests with different tokens each use
+  their own; the token is never stored on the shared client.
+- A request without the header falls back to `GITHUB_TOKEN`. With the option
+  on, `GITHUB_TOKEN` is optional: an instance without it serves only
+  requests that bring a token, and refuses the others before calling GitHub
+  ("No GitHub token for this request").
+- The header must be exactly `Bearer <token>` (scheme in any case, one
+  space, a token of printable ASCII with no spaces). Anything else is
+  refused, never forwarded, even when `GITHUB_TOKEN` is set.
+- The request token is scrubbed from error messages like `GITHUB_TOKEN` is.
+- With the option off (the default) an incoming Authorization header is
+  ignored, exactly as before. stdio has no request headers and always uses
+  `GITHUB_TOKEN`.
+
+The option makes the server act as whoever sends a token. Expose the HTTP
+port only to callers you would hand that token to anyway, behind TLS.
 
 ### Creating a GitHub Personal Access Token
 
@@ -166,11 +193,11 @@ For a fine-grained personal access token, the repository permissions are:
 | Metadata | every tool (GitHub grants it with any other permission) | — |
 | Contents | `get_file_content_tool`, `list_repo_tree_tool` | `merge_pull_request_tool`, `create_release_tool` |
 | Issues | `list_issues_tool`, `get_issue_tool` | `create_issue_tool`, `update_issue_tool`, `create_issue_comment_tool` |
-| Pull requests | `list_pull_requests_tool`, `get_pull_request_tool`, `get_pull_request_diff_tool`, `get_pull_request_checks_tool`, `list_pull_request_comments_tool` | `create_pull_request_tool`, `update_pull_request_tool`, `reply_to_review_comment_tool`, `create_issue_comment_tool` on a PR |
+| Pull requests | `merge_pull_request_tool`, `list_pull_requests_tool`, `get_pull_request_tool`, `get_pull_request_diff_tool`, `get_pull_request_checks_tool`, `list_pull_request_comments_tool` | `create_pull_request_tool`, `update_pull_request_tool`, `reply_to_review_comment_tool`, `create_issue_comment_tool` on a PR |
 | Actions | `list_workflow_runs_tool`, `get_workflow_run_tool`, `get_failed_job_logs_tool` | `trigger_workflow_tool`, `rerun_workflow_run_tool`, `rerun_failed_jobs_tool` |
-| Commit statuses | `get_pull_request_checks_tool` | — |
+| Commit statuses | `get_pull_request_checks_tool`, `merge_pull_request_tool` | — |
 
-`get_pull_request_checks_tool` reads check-runs, and GitHub's permission table
+`get_pull_request_checks_tool` and `merge_pull_request_tool` read check-runs, and GitHub's permission table
 for fine-grained tokens lists no permission for that endpoint. It is readable
 on public repositories; on a private repository use a classic token or a
 GitHub App token. The search tools likewise have no permission of their own:
@@ -186,9 +213,35 @@ Three things worth knowing before granting write:
   `.github/workflows/`, relative to the default branch, additionally needs
   Workflows: write; without it GitHub answers 404. Expect the same of a merge
   that brings workflow changes in.
-- **Branch rules still apply.** `merge_pull_request_tool` cannot merge past
-  required checks or reviews; GitHub answers 405 and the tool returns its
-  message.
+- **The merge gate checks required status checks itself**, below. Other
+  branch rules (required reviews, for instance) are left to GitHub, which
+  answers 405 when it refuses; a token that may bypass the rules gets past
+  them.
+
+### The merge gate
+
+An organization owner, or anyone on a ruleset's bypass list, can merge past
+failing required checks: GitHub merges a red pull request for such a token.
+So `merge_pull_request_tool` does not leave the checks to GitHub. Before it
+merges it:
+
+1. reads the pull request's base branch and head SHA, and refuses if `sha`
+   was given and the head has moved;
+2. collects the base branch's required status checks from its active
+   rulesets and its classic branch protection, read from the branch itself
+   so no Administration permission is needed. An error reading either, or a
+   protected branch whose protection is not shown, refuses the merge rather
+   than count as none;
+3. refuses if no check is required, unless `allow_no_required_checks=True`;
+4. requires, for every required check on the head commit, a completed check
+   run of that name concluding `success`, `skipped` or `neutral` (the most
+   recent run of the name decides), or a commit status of `success`. A rule
+   that names an app accepts only that app's check runs. A missing, pending
+   or failed check refuses the merge, and the error lists each one and why;
+5. reads the pull request again and refuses if its head or base changed
+   meanwhile (GitHub's merge call pins the head but not the base), then
+   merges with the head SHA pinned, so a later push makes GitHub refuse
+   (409) rather than merge code nobody checked.
 
 With a classic token, `repo` covers all of the above (`public_repo` for public
 repositories only), plus `workflow` for the workflow-file case.
@@ -256,6 +309,7 @@ Assistant: [calls list_pull_request_comments_tool with pull_number=5]
 Assistant: [calls reply_to_review_comment_tool with comment_id=..., body="fixed in abc1234"]
 Assistant: [calls get_pull_request_checks_tool with pull_number=5]
 Assistant: [calls merge_pull_request_tool with merge_method="squash", sha=<head_sha from the checks>]
+           (the tool checks the required checks again itself before merging)
 ```
 
 ### Read a File
@@ -281,7 +335,9 @@ This server was designed with security as a primary concern. See [SECURITY.md](S
 1. **Token Protection**
    - Stored as SecretStr (never accidentally logged)
    - Environment variable only (never in files or args)
-   - Sanitized from all error messages
+   - Optionally, a per-request token from the HTTP `Authorization` header,
+     used for that request only and never stored on the shared client
+   - Both sanitized from all error messages
 
 2. **Input Validation**
    - Pydantic models for write inputs
@@ -296,6 +352,8 @@ This server was designed with security as a primary concern. See [SECURITY.md](S
    - Response size limits (10MB)
    - Job-log downloads follow GitHub's redirect without the token, over
      HTTPS only, and keep just the tail (20MB download limit)
+   - Merges only when the required checks are green on the head commit,
+     even for a token GitHub would let bypass them
 
 4. **Automated CVE Scanning**
    - GitHub Actions scan dependencies

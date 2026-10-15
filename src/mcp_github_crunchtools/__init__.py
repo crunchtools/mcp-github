@@ -12,7 +12,10 @@ Usage:
     uvx mcp-github-crunchtools
 
 Environment Variables:
-    GITHUB_TOKEN: Required. GitHub Personal Access Token.
+    GITHUB_TOKEN: GitHub Personal Access Token. Required unless
+        GITHUB_ACCEPT_REQUEST_TOKEN is true, 1 or yes.
+    GITHUB_ACCEPT_REQUEST_TOKEN: Optional. Over HTTP, act with the token of
+        each request's Authorization: Bearer header (default: off).
     GITHUB_API_URL: Optional. API base URL (default: https://api.github.com).
     GITHUB_DEFAULT_ORG: Optional. Default owner when a tool omits owner.
 
@@ -26,7 +29,7 @@ import argparse
 
 from .server import mcp
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __all__ = ["main", "mcp"]
 
 

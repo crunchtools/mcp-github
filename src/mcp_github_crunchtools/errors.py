@@ -5,8 +5,22 @@ Internal errors should be caught and converted to UserError before propagating.
 """
 
 import os
+from contextvars import ContextVar
 
 SAFE_ID_MAX_LENGTH = 40
+
+# The token a caller sent with the current HTTP request, when the server
+# accepts one. The client sets it per request; asyncio gives each MCP request
+# its own context, so one request never sees another's token here.
+request_token: ContextVar[str | None] = ContextVar("request_token", default=None)
+
+
+def scrub_tokens(message: str) -> str:
+    """Replace the environment token and the current request token with ***."""
+    for token in (os.environ.get("GITHUB_TOKEN", ""), request_token.get()):
+        if token:
+            message = message.replace(token, "***")
+    return message
 
 
 class UserError(Exception):
@@ -24,13 +38,12 @@ class ConfigurationError(UserError):
 class GitHubApiError(UserError):
     """Error from GitHub API.
 
-    The message is sanitized to remove any potential token references.
+    The message is sanitized to remove the environment token and the token
+    of the current request.
     """
 
     def __init__(self, code: int, message: str) -> None:
-        token = os.environ.get("GITHUB_TOKEN", "")
-        safe_message = message.replace(token, "***") if token else message
-        super().__init__(f"GitHub API error {code}: {safe_message}")
+        super().__init__(f"GitHub API error {code}: {scrub_tokens(message)}")
 
 
 class NotFoundError(UserError):
@@ -59,6 +72,11 @@ class RateLimitError(UserError):
         if retry_after:
             msg += f" Retry after {retry_after} seconds."
         super().__init__(msg)
+
+
+class MergeRefusedError(UserError):
+    """merge_pull_request refused to merge: a required check is not green,
+    or the checks could not be established."""
 
 
 class ValidationError(UserError):

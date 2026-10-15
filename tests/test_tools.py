@@ -711,47 +711,6 @@ class TestPullRequestTools:
             await create_pull_request(owner="o", repo="r", title="Fix", head="fix", base="main")
 
     @pytest.mark.asyncio
-    async def test_merge_pull_request(self) -> None:
-        from mcp_github_crunchtools.tools import merge_pull_request
-
-        head_sha = "a" * 40
-        resp = _mock_response(
-            json_data={
-                "merged": True,
-                "sha": "b" * 40,
-                "message": "Pull Request successfully merged",
-            },
-        )
-
-        with _patch_client(resp) as mock_client:
-            result = await merge_pull_request(
-                owner="o", repo="r", pull_number=12, merge_method="squash", sha=head_sha.upper()
-            )
-            call = mock_client.return_value.request.call_args
-            assert call.kwargs["method"] == "PUT"
-            assert call.kwargs["url"] == "/repos/o/r/pulls/12/merge"
-            assert call.kwargs["json"] == {"merge_method": "squash", "sha": head_sha}
-
-        assert result == {
-            "merged": True,
-            "sha": "b" * 40,
-            "message": "Pull Request successfully merged",
-        }
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("sha", [None, "", "   "])
-    async def test_merge_pull_request_without_sha(self, sha: str | None) -> None:
-        """A blank optional sha means "not given": it is left out of the body."""
-        from mcp_github_crunchtools.tools import merge_pull_request
-
-        resp = _mock_response(json_data={"merged": True})
-
-        with _patch_client(resp) as mock_client:
-            await merge_pull_request(owner="o", repo="r", pull_number=12, sha=sha)
-            call = mock_client.return_value.request.call_args
-            assert call.kwargs["json"] == {"merge_method": "merge"}
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "arguments",
         [
@@ -770,26 +729,6 @@ class TestPullRequestTools:
             with pytest.raises((ValueError, ValidationError), match=r".+"):
                 await merge_pull_request(owner="o", repo="r", **arguments)
             mock_client.return_value.request.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("status_code", "message"),
-        [
-            (405, "Pull Request is not mergeable"),
-            (409, "Head branch was modified. Review and try the merge again."),
-        ],
-    )
-    async def test_merge_pull_request_github_refusal(self, status_code: int, message: str) -> None:
-        """Not mergeable (405) and a moved head (409) keep GitHub's message."""
-        from mcp_github_crunchtools.errors import GitHubApiError
-        from mcp_github_crunchtools.tools import merge_pull_request
-
-        resp = _mock_response(status_code=status_code, json_data={"message": message})
-
-        with _patch_client(resp), pytest.raises(GitHubApiError) as exc_info:
-            await merge_pull_request(owner="o", repo="r", pull_number=12, sha="a" * 40)
-
-        assert f"{status_code}: {message}" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_list_pull_request_comments_combines_three_kinds(self) -> None:

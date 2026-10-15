@@ -44,7 +44,7 @@ READ_ONLY = {"readOnlyHint": True}
 
 mcp = FastMCP(
     name="mcp-github",
-    version="1.2.0",
+    version="1.3.0",
     instructions=(
         "Secure MCP server for GitHub repositories: issues, pull requests "
         "(open, review discussion, diffs, CI checks, merge), Actions runs and "
@@ -358,23 +358,33 @@ async def merge_pull_request_tool(
     pull_number: int,
     merge_method: str = "merge",
     sha: str | None = None,
+    allow_no_required_checks: bool = False,
     owner: str | None = None,
 ) -> dict[str, Any]:
-    """Merge a GitHub pull request.
+    """Merge a GitHub pull request, only once its required checks are green.
 
-    Check get_pull_request_checks_tool first. Pass its ``head_sha`` as
-    ``sha`` to merge only the commit that was checked: GitHub refuses the
-    merge if the branch has moved since.
+    The tool enforces the base branch's required status checks itself before
+    merging, because an organization owner's token (or one on a ruleset's
+    bypass list) lets GitHub merge past failing required checks. It refuses,
+    naming each offending check, when a required check run or status on the
+    PR head is missing, pending or failed; when ``sha`` is not the current
+    head; when branch protection cannot be read; and when the base branch
+    requires no checks at all, unless ``allow_no_required_checks`` is True.
+    Passing check runs conclude success, skipped or neutral. The merge is
+    pinned to the head SHA that was checked.
 
     Args:
         repo: Repository name
         pull_number: Pull request number
         merge_method: "merge", "squash", or "rebase" (default: merge)
         sha: Full commit SHA the PR head must still be at (optional)
+        allow_no_required_checks: Merge even if the base branch requires no
+            status checks (default: False, refuse)
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
 
     Returns:
-        Merge result (merged, sha of the merge commit, message)
+        Merge result (merged, sha of the merge commit, message), the
+        head_sha that was checked, and the required_checks
     """
     return await merge_pull_request(
         owner=owner,
@@ -382,6 +392,7 @@ async def merge_pull_request_tool(
         pull_number=pull_number,
         merge_method=merge_method,
         sha=sha,
+        allow_no_required_checks=allow_no_required_checks,
     )
 
 

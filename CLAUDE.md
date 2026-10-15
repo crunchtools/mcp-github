@@ -44,7 +44,8 @@ claude mcp add mcp-github-crunchtools \
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GITHUB_TOKEN` | Yes | — | GitHub Personal Access Token |
+| `GITHUB_TOKEN` | Yes, unless `GITHUB_ACCEPT_REQUEST_TOKEN` is on | — | GitHub Personal Access Token |
+| `GITHUB_ACCEPT_REQUEST_TOKEN` | No | off | Over HTTP, use each request's `Authorization: Bearer` token (falls back to `GITHUB_TOKEN`) |
 | `GITHUB_API_URL` | No | `https://api.github.com` | API base URL (set for GHES) |
 | `GITHUB_DEFAULT_ORG` | No | — | Default owner when a tool omits `owner` |
 | `SSL_CERT_FILE` | No | — | Custom CA bundle for self-hosted instances |
@@ -67,6 +68,14 @@ are scoped per-profile by the gateway. `trigger_workflow_tool` dispatches a
 fresh run (via `workflow_dispatch`) and is the way to *force* a build —
 `rerun_*` only re-run an existing run and GitHub rejects runs older than 30
 days.
+
+`merge_pull_request_tool` enforces the base branch's required checks itself
+(rulesets and classic protection, fail closed) before it merges, pinned to
+the checked head SHA: an org owner's token can bypass the rules on GitHub's
+side. Do not weaken that gate.
+
+The per-request token goes into one call's headers and the `request_token`
+context variable in `errors.py`; never onto the shared httpx client.
 
 `get_failed_job_logs_tool` is the one tool that talks to a host other than the
 API: GitHub redirects a job log to a storage URL. `GitHubClient.get_redirected_tail`

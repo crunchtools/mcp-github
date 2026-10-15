@@ -26,13 +26,15 @@ This document describes the security architecture of mcp-github-crunchtools.
 
 | Vector | Description | Mitigation |
 |--------|-------------|------------|
-| **Token Leakage** | Token exposed in logs, errors, or outputs | Never log tokens, scrub from errors |
+| **Token Leakage** | Token exposed in logs, errors, or outputs | Never log tokens; scrub the env and request tokens from errors |
+| **Token Mix-up** | One HTTP caller's token used for another's request | Per-call header and a request-scoped context variable; nothing on the shared client (2.2) |
+| **Check Bypass** | A token allowed to bypass rulesets merges a PR with failing checks | The merge tool enforces required checks itself (2.7) |
 | **Input Injection** | Malicious owner/repo or path | Strict input validation |
 | **Path Traversal** | Manipulated file paths | Allowlist validation, reject `..` |
 | **SSRF** | Redirect API calls to internal services | HTTPS enforcement, URL validation |
 | **Token Forwarding** | A redirect carries the token to another host | The API client follows no redirects; the job-log redirect is fetched by a client with no token (2.6) |
 | **Untrusted Text** | Comments, reviews and job logs are written by other people and by the code under test | Returned as data with bounded size; the caller (or a gateway in front of it) must not treat them as instructions |
-| **Unintended Merge** | The PR head moves between the check and the merge | `merge_pull_request_tool` takes the expected head `sha`; GitHub refuses if it moved |
+| **Unintended Merge** | The PR head moves between the check and the merge | `merge_pull_request_tool` always pins the merge to the head it checked; GitHub refuses (409) if it moved |
 | **Denial of Service** | Exhaust GitHub rate limits | Rate-limit awareness |
 | **Privilege Escalation** | Access beyond token scope | Server relies on token scope |
 | **Supply Chain** | Compromised dependencies | Automated CVE scanning |
@@ -79,28 +81,39 @@ This document describes the security architecture of mcp-github-crunchtools.
 
 ### 2.2 Token Security
 
-The API token is handled with multiple protections:
+`GITHUB_TOKEN` is read from the environment only and held as a pydantic
+`SecretStr`; `Config.__repr__()` and `__str__()` print `token=***`. It is
+required unless `GITHUB_ACCEPT_REQUEST_TOKEN` is on.
 
-```python
-from pydantic import SecretStr
+#### Per-request token
 
-class Config:
-    def __init__(self):
-        token = os.environ.get("GITHUB_TOKEN")
-        if not token:
-            raise ConfigurationError("GITHUB_TOKEN required")
+With `GITHUB_ACCEPT_REQUEST_TOKEN` set to `true`, `1` or `yes`, the server
+takes the caller's token from each HTTP request's `Authorization` header, as
+GitHub's own hosted MCP server does. Off (the default), the header is
+ignored and nothing changes.
 
-        # Store as SecretStr to prevent accidental logging
-        self._token = SecretStr(token)
+- The token is chosen per API call. An incoming `Authorization: Bearer
+  <token>` is sent as that call's own header, overriding the shared client's
+  default; without one, `GITHUB_TOKEN` is used; with neither, the call fails
+  before any request is made. The shared httpx client carries an
+  `Authorization` default only when `GITHUB_TOKEN` is set, and never a
+  request's token, so concurrent requests with different tokens each send
+  their own. A test runs five requests in flight at once to show it.
+- The header must match `Bearer <token>` exactly: the scheme in any case, a
+  single space, then 1 to 1024 printable non-space ASCII characters. Anything
+  else (another scheme, spaces, control characters, an empty value) is
+  refused with an error that does not echo it, and is never forwarded. A
+  malformed header does not fall back to `GITHUB_TOKEN`.
+- FastMCP strips `Authorization` from the headers it exposes; the client asks
+  for it explicitly, and only when the option is on. stdio has no request
+  headers and always uses `GITHUB_TOKEN`.
+- The request token is kept in a context variable for the duration of the
+  request so that error messages scrub it (2.5).
 
-    @property
-    def token(self) -> str:
-        """Get token value - use sparingly."""
-        return self._token.get_secret_value()
-
-    def __repr__(self) -> str:
-        return "Config(token=***)"
-```
+Turning the option on makes the server act as whoever presents a token. That
+grants no access the caller did not already have, but the HTTP port should
+still be reachable only by intended callers, over TLS, since the token
+crosses it.
 
 ### 2.3 URL Security
 
@@ -131,13 +144,15 @@ All inputs are validated:
 Errors are sanitized before being returned:
 
 ```python
-class GitHubApiError(UserError):
-    def __init__(self, code: int, message: str):
-        # Sanitize message to remove any token references
-        token = os.environ.get("GITHUB_TOKEN", "")
-        safe_message = message.replace(token, "***") if token else message
-        super().__init__(f"GitHub API error {code}: {safe_message}")
+def scrub_tokens(message: str) -> str:
+    for token in (os.environ.get("GITHUB_TOKEN", ""), request_token.get()):
+        if token:
+            message = message.replace(token, "***")
+    return message
 ```
+
+`GitHubApiError` passes every message through `scrub_tokens`, which removes
+both `GITHUB_TOKEN` and the token of the current request.
 
 GitHub signals primary rate limiting with HTTP 403 plus
 `x-ratelimit-remaining: 0`; the client maps this (and HTTP 429) to a
@@ -173,6 +188,41 @@ timestamps are removed, each job is cut to its last `tail_lines` lines (at
 most 1000), logs are returned for at most 5 failed jobs, and all log text in
 one result stays within 256 KiB. The result says when any of these cut
 something.
+
+### 2.7 Merge Gate
+
+`merge_pull_request_tool` enforces the base branch's required status checks
+itself. GitHub lets an organization owner, or an actor on a ruleset's bypass
+list, merge past failing required checks, so a token with that standing
+would otherwise merge a red pull request.
+
+- The PR's head SHA and base are read first; a caller's `sha` that is not
+  the head is refused.
+- Required checks come from the branch's active rulesets
+  (`GET /repos/{owner}/{repo}/rules/branches/{branch}`) and its classic
+  protection, as shown on the branch (`GET .../branches/{branch}`), which
+  needs no Administration permission. An error reading either, or a
+  protected branch whose protection is not shown, refuses the merge: the
+  gate cannot tell that from there being no checks.
+- No required checks at all refuses the merge unless the caller passes
+  `allow_no_required_checks=True`.
+- Each required check needs, on the head commit, a completed check run of
+  that name concluding `success`, `skipped` or `neutral` (the most recent run
+  of the name, by id, decides) or a commit status of `success`. A rule that
+  names an app (`integration_id`, or `app_id` in classic protection) is
+  satisfied only by that app's check runs, never by a commit status, which
+  anyone with Commit statuses: write could post.
+- Every list is read in full, up to 10 pages of 100; a longer list refuses
+  the merge rather than be judged in part.
+- Just before merging the PR is read again, and a changed head or base
+  refuses the merge: the merge call pins the head but not the base, so a
+  retarget during the gate would otherwise land on a branch whose checks
+  were not judged. The merge request pins `sha` to the checked head, so a
+  push after that re-read makes GitHub answer 409. A retarget in the
+  milliseconds between the re-read and the merge call remains possible;
+  GitHub offers no way to pin the base.
+- Other branch rules, such as required reviews, are not re-enforced; a token
+  that may bypass them still does.
 
 ## 3. Minimum Permission Scopes
 
@@ -211,7 +261,8 @@ or re-run.
 GitHub offers nothing narrower for merging. A compromised token can change the
 default branch wherever branch rules allow it, and a published release fires
 the repository's `on: release` workflows. Protect the default branch with
-required checks: `merge_pull_request_tool` cannot merge past them.
+required checks: `merge_pull_request_tool` refuses to merge unless they are
+green (2.7), and without any it refuses unless told otherwise.
 
 A release whose target commit changes a file under `.github/workflows/`,
 relative to the default branch, additionally needs **Workflows: write**;
@@ -228,14 +279,14 @@ changes in.
 | `list_pull_requests_tool`, `get_pull_request_tool`, `get_pull_request_diff_tool`, `list_pull_request_comments_tool` | Pull requests: read |
 | `get_pull_request_checks_tool` | Pull requests: read, Commit statuses: read (see below) |
 | `create_pull_request_tool`, `update_pull_request_tool`, `reply_to_review_comment_tool` | Pull requests: write |
-| `merge_pull_request_tool` | Contents: write |
+| `merge_pull_request_tool` | Contents: write; Pull requests and Commit statuses: read (see 2.7) |
 | `create_release_tool` | Contents: write |
 | `list_workflow_runs_tool`, `get_workflow_run_tool`, `get_failed_job_logs_tool` | Actions: read |
 | `trigger_workflow_tool`, `rerun_workflow_run_tool`, `rerun_failed_jobs_tool` | Actions: write |
 | `get_file_content_tool`, `list_repo_tree_tool` | Contents: read |
 | `search_code_tool`, `search_issues_tool` | None of their own (see below) |
 
-`get_pull_request_checks_tool` reads check-runs, and GitHub's permission table
+`get_pull_request_checks_tool` and `merge_pull_request_tool` read check-runs, and GitHub's permission table
 for fine-grained tokens lists no permission for that endpoint. It is readable
 on public repositories; on a private repository use a classic token or a
 GitHub App token. The search tools likewise have no permission of their own:
@@ -247,6 +298,8 @@ For minimum privilege, grant only:
 - Read on Contents, Issues, Pull requests and Actions — if you only need to read
 - Add write on Issues and Pull requests — to comment, open and update
 - Add write on Contents — only where the agent is meant to merge or release
+  (merging needs no Administration permission: the gate reads branch
+  protection from the branch itself)
 
 ## 4. Supply Chain Security
 

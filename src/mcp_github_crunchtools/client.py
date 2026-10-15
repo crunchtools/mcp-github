@@ -11,13 +11,16 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from fastmcp.server.dependencies import get_http_headers
 
 from .config import get_config
 from .errors import (
+    ConfigurationError,
     GitHubApiError,
     NotFoundError,
     PermissionDeniedError,
     RateLimitError,
+    request_token,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +51,33 @@ def _is_ip_literal(host: str) -> bool:
     return True
 
 
+# An incoming Authorization header is used only in exactly this form: the
+# scheme in any case, one space, then one run of printable non-space ASCII.
+# The length bound is far above any GitHub token and keeps junk out.
+_BEARER = re.compile(r"(?i:bearer) ([\x21-\x7e]{1,1024})")
+
+
+def _incoming_token() -> str | None:
+    """The token of the current HTTP request's ``Authorization: Bearer`` header.
+
+    Returns None when there is no HTTP request (stdio) or the request has no
+    Authorization header. FastMCP strips that header unless asked for it.
+
+    Raises:
+        ConfigurationError: If the header is present but not exactly
+            ``Bearer <token>``. The value is never echoed.
+    """
+    value = get_http_headers(include={"authorization"}).get("authorization")
+    if value is None:
+        return None
+    match = _BEARER.fullmatch(value)
+    if match is None:
+        raise ConfigurationError(
+            "Refusing the request's Authorization header: expected 'Bearer <token>'"
+        )
+    return match.group(1)
+
+
 _LINK_ENTRY = re.compile(r'<(?P<url>[^>]+)>;\s*rel="(?P<rel>[^"]+)"')
 _PAGE_PARAM = re.compile(r"[?&]page=(\d+)")
 
@@ -57,7 +87,10 @@ class GitHubClient:
 
     Security features:
     - Configurable base URL with HTTPS enforcement (supports GHES)
-    - Token passed via Authorization: Bearer header (not URL)
+    - Token passed via Authorization: Bearer header (not URL), chosen per
+      call: the token of the incoming HTTP request when
+      GITHUB_ACCEPT_REQUEST_TOKEN is on and the request has one, otherwise
+      GITHUB_TOKEN. The shared client never holds a request's token.
     - TLS certificate validation (httpx default)
     - Request timeout enforcement
     - Response size limits
@@ -73,13 +106,15 @@ class GitHubClient:
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the async HTTP client."""
         if self._client is None:
+            headers = {
+                "Accept": DEFAULT_ACCEPT,
+                "X-GitHub-Api-Version": GITHUB_API_VERSION,
+            }
+            if self._config.token:
+                headers["Authorization"] = f"Bearer {self._config.token}"
             self._client = httpx.AsyncClient(
                 base_url=self._config.api_base_url,
-                headers={
-                    "Authorization": f"Bearer {self._config.token}",
-                    "Accept": DEFAULT_ACCEPT,
-                    "X-GitHub-Api-Version": GITHUB_API_VERSION,
-                },
+                headers=headers,
                 timeout=httpx.Timeout(REQUEST_TIMEOUT),
                 verify=self._config.ssl_verify,
                 # This client carries the token on every request, so it must
@@ -87,6 +122,29 @@ class GitHubClient:
                 follow_redirects=False,
             )
         return self._client
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Per-call Authorization header, or {} to use the client's default.
+
+        The request's token, when accepted and present, is returned as a
+        header for this call only and recorded in the ``request_token``
+        context variable so that errors scrub it.
+
+        Raises:
+            ConfigurationError: If the incoming header is malformed, or there
+                is neither a request token nor GITHUB_TOKEN.
+        """
+        if self._config.accept_request_token:
+            token = _incoming_token()
+            request_token.set(token)
+            if token is not None:
+                return {"Authorization": f"Bearer {token}"}
+        if self._config.token:
+            return {}
+        raise ConfigurationError(
+            "No GitHub token for this request: send 'Authorization: Bearer <token>' "
+            "or set GITHUB_TOKEN"
+        )
 
     async def close(self) -> None:
         """Close the HTTP client."""
@@ -107,11 +165,15 @@ class GitHubClient:
         Transport failures and oversized responses are raised as
         GitHubApiError; the HTTP status is left for the caller to judge.
         """
+        # Resolved before anything else, so a call with no usable token makes
+        # no request at all.
+        headers = self._auth_headers()
+        if accept:
+            headers["Accept"] = accept
+
         client = await self._get_client()
 
         logger.debug("API request: %s %s", method, path)
-
-        headers = {"Accept": accept} if accept else None
 
         try:
             response = await client.request(
@@ -119,7 +181,7 @@ class GitHubClient:
                 url=path,
                 params=params,
                 json=json_data,
-                headers=headers,
+                headers=headers or None,
             )
         except httpx.TimeoutException as e:
             raise GitHubApiError(0, f"Request timeout: {e}") from e
