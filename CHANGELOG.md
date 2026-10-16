@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-16
+
+### Fixed
+
+- A primary rate limit reported GitHub's `x-ratelimit-reset` epoch as the
+  wait ("Retry after 1792152901 seconds"). It now reports the seconds left
+  until the reset.
+
 ## [1.3.0] - 2026-10-14
 
 ### Added
