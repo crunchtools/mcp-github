@@ -6,6 +6,7 @@ Integration tests with a real GitHub account should be run separately.
 
 import base64
 import os
+import time
 
 import httpx
 import pytest
@@ -1908,6 +1909,28 @@ class TestClientErrorHandling:
 
         with _patch_client(resp), pytest.raises(RateLimitError):
             await get_issue(owner="o", repo="r", issue_number=1)
+
+    @pytest.mark.asyncio
+    async def test_403_rate_limit_reset_is_a_duration(self) -> None:
+        """x-ratelimit-reset is an epoch second; the error reports the wait,
+        not the timestamp."""
+        from mcp_github_crunchtools.errors import RateLimitError
+        from mcp_github_crunchtools.tools import get_issue
+
+        resp = _mock_response(
+            status_code=403,
+            json_data={"message": "API rate limit exceeded"},
+            headers={
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": str(int(time.time()) + 600),
+            },
+        )
+
+        with _patch_client(resp), pytest.raises(RateLimitError) as exc_info:
+            await get_issue(owner="o", repo="r", issue_number=1)
+
+        seconds = int(str(exc_info.value).split("Retry after ")[1].split()[0])
+        assert 590 <= seconds <= 600
 
     @pytest.mark.asyncio
     async def test_403_preserves_github_message_when_not_rate_limited(

@@ -7,6 +7,7 @@ All requests go through this client to ensure consistent security practices.
 import ipaddress
 import logging
 import re
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -24,6 +25,23 @@ from .errors import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _retry_after_seconds(headers: httpx.Headers) -> int | None:
+    """Seconds until a rate-limited call may be retried.
+
+    ``retry-after`` is already a duration; ``x-ratelimit-reset`` is the UTC
+    epoch second the window resets, so it is converted to a duration.
+    """
+    try:
+        if (retry_after := headers.get("retry-after")) is not None:
+            return max(0, int(retry_after))
+        if (reset := headers.get("x-ratelimit-reset")) is not None:
+            return max(0, int(reset) - int(time.time()))
+    except ValueError:
+        return None
+    return None
+
 
 MAX_RESPONSE_SIZE = 10 * 1024 * 1024
 # A job log is streamed and only its tail is kept, so it may be larger than a
@@ -302,10 +320,7 @@ class GitHubClient:
         rate_remaining = response.headers.get("x-ratelimit-remaining")
 
         if status_code == 429 or (status_code == 403 and rate_remaining == "0"):
-            retry_after = response.headers.get("retry-after")
-            if retry_after is None:
-                retry_after = response.headers.get("x-ratelimit-reset")
-            raise RateLimitError(int(retry_after) if retry_after else None)
+            raise RateLimitError(_retry_after_seconds(response.headers))
 
         if status_code == 401:
             raise PermissionDeniedError("Valid token with required scopes")
