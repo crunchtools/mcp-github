@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The integer ID parameters of the read tools (`issue_number`, `pull_number`,
+  `run_id`) now publish `minimum: 1` in their schema, so `0` and negative IDs
+  are rejected.
+
 ## [1.3.1] - 2026-10-16
 
 ### Fixed
