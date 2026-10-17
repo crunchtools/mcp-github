@@ -4,9 +4,10 @@ This module creates and configures the MCP server with all tools.
 """
 
 import logging
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
+from pydantic import Field
 
 from .tools import (
     create_issue,
@@ -89,7 +90,7 @@ async def list_issues_tool(
 @mcp.tool(annotations=READ_ONLY)
 async def get_issue_tool(
     repo: str,
-    issue_number: int,
+    issue_number: Annotated[int, Field(ge=1)],
     owner: str | None = None,
 ) -> dict[str, Any]:
     """Get a single GitHub issue by number.
@@ -222,7 +223,7 @@ async def list_pull_requests_tool(
 @mcp.tool(annotations=READ_ONLY)
 async def get_pull_request_tool(
     repo: str,
-    pull_number: int,
+    pull_number: Annotated[int, Field(ge=1)],
     owner: str | None = None,
 ) -> dict[str, Any]:
     """Get a single GitHub pull request by number.
@@ -241,7 +242,7 @@ async def get_pull_request_tool(
 @mcp.tool(annotations=READ_ONLY)
 async def get_pull_request_diff_tool(
     repo: str,
-    pull_number: int,
+    pull_number: Annotated[int, Field(ge=1)],
     owner: str | None = None,
 ) -> dict[str, Any]:
     """Get the unified diff for a GitHub pull request.
@@ -260,7 +261,7 @@ async def get_pull_request_diff_tool(
 @mcp.tool(annotations=READ_ONLY)
 async def get_pull_request_checks_tool(
     repo: str,
-    pull_number: int,
+    pull_number: Annotated[int, Field(ge=1)],
     owner: str | None = None,
 ) -> dict[str, Any]:
     """Get a CI verdict for a PR that distinguishes skipped from failed.
@@ -399,7 +400,7 @@ async def merge_pull_request_tool(
 @mcp.tool(annotations=READ_ONLY)
 async def list_pull_request_comments_tool(
     repo: str,
-    pull_number: int,
+    pull_number: Annotated[int, Field(ge=1)],
     owner: str | None = None,
 ) -> dict[str, Any]:
     """List everything said on a GitHub pull request, in one list.
@@ -650,7 +651,7 @@ async def rerun_failed_jobs_tool(
 @mcp.tool(annotations=READ_ONLY)
 async def get_workflow_run_tool(
     repo: str,
-    run_id: int,
+    run_id: Annotated[int, Field(ge=1)],
     owner: str | None = None,
 ) -> dict[str, Any]:
     """Get one GitHub Actions workflow run and its jobs (no logs).
@@ -670,7 +671,7 @@ async def get_workflow_run_tool(
 @mcp.tool(annotations=READ_ONLY)
 async def get_failed_job_logs_tool(
     repo: str,
-    run_id: int,
+    run_id: Annotated[int, Field(ge=1)],
     tail_lines: int = 200,
     owner: str | None = None,
 ) -> dict[str, Any]:

@@ -141,6 +141,20 @@ class TestReadOnlyAnnotation:
         assert set(READ_ONLY_CALLS) == READ_ONLY
 
     @pytest.mark.asyncio
+    async def test_read_tool_integer_ids_publish_minimum_one(self) -> None:
+        from mcp_github_crunchtools.server import mcp
+
+        found = 0
+        for tool in await mcp.list_tools():
+            if tool.name not in READ_ONLY:
+                continue
+            for field in ("issue_number", "pull_number", "run_id"):
+                if field in tool.parameters["properties"]:
+                    found += 1
+                    assert tool.parameters["properties"][field]["minimum"] == 1
+        assert found == 7
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("name", sorted(READ_ONLY))
     async def test_read_only_tool_sends_only_get(self, name: str) -> None:
         """A read-only tool reaches GitHub with GET or HEAD and nothing else."""
