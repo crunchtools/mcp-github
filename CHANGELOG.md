@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-10-17
+
 ### Fixed
 
 - The integer ID parameters of the read tools (`issue_number`, `pull_number`,
