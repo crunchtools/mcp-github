@@ -34,7 +34,7 @@ The container image is built on the [Hummingbird Python base image](https://quay
 
 ## Features
 
-25 tools. Tools marked *write* change something on GitHub; the others only
+26 tools. Tools marked *write* change something on GitHub; the others only
 read and publish `readOnlyHint`. The last column is the fine-grained token
 permission the tool needs (see [Token permissions](#token-permissions)).
 
@@ -44,6 +44,7 @@ permission the tool needs (see [Token permissions](#token-permissions)).
 |------|--------------|------------|
 | `list_issues_tool` | List issues for a repository (pull requests excluded) | Issues: read |
 | `get_issue_tool` | Get a single issue by number | Issues: read |
+| `list_issue_comments_tool` | Comments on an issue or a pull request conversation, oldest first | Issues: read, or Pull requests: read for a PR |
 | `create_issue_tool` | Open an issue (*write*) | Issues: write |
 | `create_issue_comment_tool` | Comment on an issue or pull request (*write*) | Issues: write, or Pull requests: write for a PR |
 | `update_issue_tool` | Edit, close or reopen an issue (*write*) | Issues: write |
@@ -97,7 +98,10 @@ permission the tool needs (see [Token permissions](#token-permissions)).
 
 - `list_pull_request_comments_tool` reads each of its three kinds oldest
   first, up to 300 items per kind. `truncated` and `truncated_kinds` say when
-  newer items were left out.
+  newer items were left out. Called on a plain issue it says so; use
+  `list_issue_comments_tool` there.
+- `list_issue_comments_tool` returns one page (up to 100 comments); follow
+  `pagination.next_page` for more.
 - `get_workflow_run_tool` lists up to 300 jobs; `jobs_truncated` says when the
   run has more.
 - `get_failed_job_logs_tool` returns at most 1000 lines per job (200 by
@@ -192,7 +196,7 @@ For a fine-grained personal access token, the repository permissions are:
 |------------|--------------------|---------------------|
 | Metadata | every tool (GitHub grants it with any other permission) | — |
 | Contents | `get_file_content_tool`, `list_repo_tree_tool` | `merge_pull_request_tool`, `create_release_tool` |
-| Issues | `list_issues_tool`, `get_issue_tool` | `create_issue_tool`, `update_issue_tool`, `create_issue_comment_tool` |
+| Issues | `list_issues_tool`, `get_issue_tool`, `list_issue_comments_tool` | `create_issue_tool`, `update_issue_tool`, `create_issue_comment_tool` |
 | Pull requests | `merge_pull_request_tool`, `list_pull_requests_tool`, `get_pull_request_tool`, `get_pull_request_diff_tool`, `get_pull_request_checks_tool`, `list_pull_request_comments_tool` | `create_pull_request_tool`, `update_pull_request_tool`, `reply_to_review_comment_tool`, `create_issue_comment_tool` on a PR |
 | Actions | `list_workflow_runs_tool`, `get_workflow_run_tool`, `get_failed_job_logs_tool` | `trigger_workflow_tool`, `rerun_workflow_run_tool`, `rerun_failed_jobs_tool` |
 | Commit statuses | `get_pull_request_checks_tool`, `merge_pull_request_tool` | — |

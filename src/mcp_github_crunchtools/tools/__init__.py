@@ -16,6 +16,7 @@ from .issues import (
     create_issue,
     create_issue_comment,
     get_issue,
+    list_issue_comments,
     list_issues,
     update_issue,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "get_pull_request_checks",
     "get_pull_request_diff",
     "get_workflow_run",
+    "list_issue_comments",
     "list_issues",
     "list_pull_request_comments",
     "list_pull_requests",
