@@ -728,7 +728,19 @@ async def list_pull_request_comments(
     items: list[dict[str, Any]] = []
     truncated_kinds: list[str] = []
     for kind, path in sources.items():
-        raw_items, cut = await _collect_pages(client, path)
+        try:
+            raw_items, cut = await _collect_pages(client, path)
+        except (GitHubApiError, NotFoundError):
+            # GitHub answers /pulls/{n}/... for a plain issue with a 403 that
+            # reads like a token scope problem. Say what is actually wrong.
+            if kind != "issue_comment":
+                issue = await client.get(f"/repos/{owner}/{repo}/issues/{pull_number}")
+                if "pull_request" not in issue:
+                    raise ValidationError(
+                        f"#{pull_number} is an issue, not a pull request; "
+                        "use list_issue_comments_tool"
+                    ) from None
+            raise
         items.extend(_discussion_item(kind, raw) for raw in raw_items)
         if cut:
             truncated_kinds.append(kind)

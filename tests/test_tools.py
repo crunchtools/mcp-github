@@ -38,16 +38,17 @@ class TestToolRegistration:
             assert callable(func), f"{name} is not callable"
 
     def test_tool_count(self) -> None:
-        """Server should export exactly 25 tools."""
+        """Server should export exactly 26 tools."""
         from mcp_github_crunchtools.tools import __all__
 
-        assert len(__all__) == 25
+        assert len(__all__) == 26
 
 
 READ_ONLY = frozenset(
     {
         "list_issues_tool",
         "get_issue_tool",
+        "list_issue_comments_tool",
         "list_pull_requests_tool",
         "get_pull_request_tool",
         "get_pull_request_diff_tool",
@@ -82,6 +83,7 @@ WRITES = frozenset(
 READ_ONLY_CALLS: dict[str, dict[str, object]] = {
     "list_issues_tool": {"owner": "o", "repo": "r"},
     "get_issue_tool": {"owner": "o", "repo": "r", "issue_number": 1},
+    "list_issue_comments_tool": {"owner": "o", "repo": "r", "issue_number": 1},
     "list_pull_requests_tool": {"owner": "o", "repo": "r"},
     "get_pull_request_tool": {"owner": "o", "repo": "r", "pull_number": 1},
     "get_pull_request_diff_tool": {"owner": "o", "repo": "r", "pull_number": 1},
@@ -152,7 +154,7 @@ class TestReadOnlyAnnotation:
                 if field in tool.parameters["properties"]:
                     found += 1
                     assert tool.parameters["properties"][field]["minimum"] == 1
-        assert found == 7
+        assert found == 8
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("name", sorted(READ_ONLY))
@@ -397,6 +399,69 @@ class TestIssueTools:
             )
 
         assert result["body"] == "Thanks!"
+
+    @pytest.mark.asyncio
+    async def test_list_issue_comments(self) -> None:
+        from mcp_github_crunchtools.tools import list_issue_comments
+
+        resp = _mock_response(
+            json_data=[
+                {
+                    "id": 7,
+                    "user": {"login": "alice"},
+                    "author_association": "MEMBER",
+                    "created_at": "2026-10-01T10:00:00Z",
+                    "updated_at": "2026-10-01T10:05:00Z",
+                    "body": "Repro attached.",
+                    "html_url": "https://github.com/o/r/issues/42#issuecomment-7",
+                    "reactions": {"dropped": True},
+                },
+                {"id": 8, "user": None, "body": None},
+            ],
+            headers={"link": '<https://api.github.com/x?page=3>; rel="next"'},
+        )
+
+        with _patch_client(resp) as mock_client:
+            result = await list_issue_comments(
+                owner="o", repo="r", issue_number=42, per_page=500, page=2
+            )
+            call = mock_client.return_value.request.call_args
+            assert call.kwargs["method"] == "GET"
+            assert call.kwargs["url"] == "/repos/o/r/issues/42/comments"
+            assert call.kwargs["params"] == {"per_page": 100, "page": 2}
+
+        assert result["issue_number"] == 42
+        assert result["pagination"]["next_page"] == 3
+        assert result["items"][0] == {
+            "id": 7,
+            "author": "alice",
+            "author_association": "MEMBER",
+            "created_at": "2026-10-01T10:00:00Z",
+            "updated_at": "2026-10-01T10:05:00Z",
+            "body": "Repro attached.",
+            "html_url": "https://github.com/o/r/issues/42#issuecomment-7",
+        }
+        assert result["items"][1]["author"] is None
+        assert result["items"][1]["body"] == ""
+
+    @pytest.mark.asyncio
+    async def test_list_issue_comments_refuses_bad_number(self) -> None:
+        from mcp_github_crunchtools.tools import list_issue_comments
+
+        with _patch_client(_mock_response(json_data=[])) as mock_client:
+            with pytest.raises(ValueError, match="positive integer"):
+                await list_issue_comments(owner="o", repo="r", issue_number=0)
+            mock_client.return_value.request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_list_issue_comments_not_found(self) -> None:
+        from mcp_github_crunchtools.errors import NotFoundError
+        from mcp_github_crunchtools.tools import list_issue_comments
+
+        resp = _mock_response(status_code=404, json_data={"message": "Not Found"})
+
+        with _patch_client(resp), pytest.raises(NotFoundError):
+            await list_issue_comments(owner="o", repo="r", issue_number=42)
 
     @pytest.mark.asyncio
     async def test_create_issue(self) -> None:
@@ -914,6 +979,40 @@ class TestPullRequestTools:
         resp = _mock_response(status_code=404, json_data={"message": "Not Found"})
 
         with _patch_client(resp), pytest.raises(NotFoundError):
+            await list_pull_request_comments(owner="o", repo="r", pull_number=5)
+
+    @pytest.mark.asyncio
+    async def test_list_pull_request_comments_on_an_issue(self) -> None:
+        """GitHub's 403 for /pulls/{n} on an issue becomes a clear error."""
+        from mcp_github_crunchtools.errors import ValidationError
+        from mcp_github_crunchtools.tools import list_pull_request_comments
+
+        forbidden = _mock_response(
+            status_code=403,
+            json_data={"message": "Resource not accessible by personal access token"},
+        )
+        issue = _mock_response(json_data={"number": 5, "title": "A plain issue"})
+
+        with (
+            _patch_client_sequence(_mock_response(json_data=[]), forbidden, issue) as mock_client,
+            pytest.raises(ValidationError, match="#5 is an issue, not a pull request"),
+        ):
+            await list_pull_request_comments(owner="o", repo="r", pull_number=5)
+        calls = mock_client.return_value.request.call_args_list
+        assert calls[-1].kwargs["url"] == "/repos/o/r/issues/5"
+
+    @pytest.mark.asyncio
+    async def test_list_pull_request_comments_403_on_a_pr_passes_through(self) -> None:
+        from mcp_github_crunchtools.errors import GitHubApiError
+        from mcp_github_crunchtools.tools import list_pull_request_comments
+
+        forbidden = _mock_response(status_code=403, json_data={"message": "Forbidden"})
+        pull = _mock_response(json_data={"number": 5, "pull_request": {"url": "x"}})
+
+        with (
+            _patch_client_sequence(_mock_response(json_data=[]), forbidden, pull),
+            pytest.raises(GitHubApiError, match="403"),
+        ):
             await list_pull_request_comments(owner="o", repo="r", pull_number=5)
 
     @pytest.mark.asyncio

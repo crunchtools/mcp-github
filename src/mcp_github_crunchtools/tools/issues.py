@@ -88,6 +88,62 @@ async def get_issue(
     return await client.get(f"/repos/{owner}/{repo}/issues/{issue_number}")
 
 
+async def list_issue_comments(
+    owner: str | None,
+    repo: str,
+    issue_number: int,
+    per_page: int = 30,
+    page: int = 1,
+) -> dict[str, Any]:
+    """List the comments on an issue or a pull request conversation, oldest first.
+
+    Diff comments and reviews on a pull request are not included; use
+    list_pull_request_comments for those.
+
+    Args:
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+        repo: Repository name
+        issue_number: Issue or pull request number
+        per_page: Results per page (max 100)
+        page: Page number
+
+    Returns:
+        {"issue_number", "items", "pagination"?}; each item carries id,
+        author, author_association, created_at, updated_at, body, html_url
+    """
+    owner = resolve_owner(owner)
+    repo = validate_name(repo, "repo")
+    issue_number = validate_positive_int(issue_number, "issue_number")
+
+    client = get_client()
+    result = await client.get(
+        f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+        params={
+            "per_page": clamp_per_page(per_page),
+            "page": validate_positive_int(page, "page"),
+        },
+    )
+
+    response: dict[str, Any] = {
+        "issue_number": issue_number,
+        "items": [
+            {
+                "id": raw.get("id"),
+                "author": (raw.get("user") or {}).get("login"),
+                "author_association": raw.get("author_association"),
+                "created_at": raw.get("created_at"),
+                "updated_at": raw.get("updated_at"),
+                "body": raw.get("body") or "",
+                "html_url": raw.get("html_url"),
+            }
+            for raw in result.get("items", [])
+        ],
+    }
+    if "pagination" in result:
+        response["pagination"] = result["pagination"]
+    return response
+
+
 async def create_issue(
     owner: str | None,
     repo: str,
@@ -169,9 +225,7 @@ async def update_issue(
         json_data["state"] = state
     if state_reason is not None:
         if state_reason not in ("completed", "not_planned", "reopened"):
-            raise ValidationError(
-                "state_reason must be 'completed', 'not_planned', or 'reopened'"
-            )
+            raise ValidationError("state_reason must be 'completed', 'not_planned', or 'reopened'")
         json_data["state_reason"] = state_reason
     if title is not None:
         json_data["title"] = title

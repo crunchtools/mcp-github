@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-17
+
+### Added
+
+- `list_issue_comments_tool`: the comments on an issue or a pull request
+  conversation, oldest first, one page at a time, with id, author,
+  author_association, created_at, updated_at, body and html_url (#45).
+
+### Fixed
+
+- `list_pull_request_comments_tool` called on a plain issue returned GitHub's
+  403 "Resource not accessible by personal access token", which reads like a
+  token scope problem. It now says the number is an issue and points to
+  `list_issue_comments_tool` (#45).
+
 ## [1.3.2] - 2026-10-17
 
 ### Fixed

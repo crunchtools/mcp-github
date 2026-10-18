@@ -1,6 +1,6 @@
 # Claude Code Instructions
 
-Secure MCP server for the GitHub REST API with 25 tools across issues, pull requests, Actions, releases, files, and search. Works with github.com and GitHub Enterprise Server.
+Secure MCP server for the GitHub REST API with 26 tools across issues, pull requests, Actions, releases, files, and search. Works with github.com and GitHub Enterprise Server.
 
 ## Quick Start
 
@@ -51,11 +51,11 @@ claude mcp add mcp-github-crunchtools \
 | `SSL_CERT_FILE` | No | — | Custom CA bundle for self-hosted instances |
 | `GITHUB_SSL_VERIFY` | No | `true` | Set `false` to disable SSL verification |
 
-## Available Tools (25)
+## Available Tools (26)
 
 | Category | Tools |
 |----------|-------|
-| Issues | `list_issues_tool`, `get_issue_tool`, `create_issue_tool`, `create_issue_comment_tool`, `update_issue_tool` |
+| Issues | `list_issues_tool`, `get_issue_tool`, `list_issue_comments_tool`, `create_issue_tool`, `create_issue_comment_tool`, `update_issue_tool` |
 | Pull Requests | `list_pull_requests_tool`, `get_pull_request_tool`, `get_pull_request_diff_tool`, `get_pull_request_checks_tool`, `list_pull_request_comments_tool`, `create_pull_request_tool`, `update_pull_request_tool`, `reply_to_review_comment_tool`, `merge_pull_request_tool` |
 | Files | `get_file_content_tool`, `list_repo_tree_tool` |
 | Search | `search_code_tool`, `search_issues_tool` |

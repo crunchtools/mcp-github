@@ -21,6 +21,7 @@ from .tools import (
     get_pull_request_checks,
     get_pull_request_diff,
     get_workflow_run,
+    list_issue_comments,
     list_issues,
     list_pull_request_comments,
     list_pull_requests,
@@ -45,7 +46,7 @@ READ_ONLY = {"readOnlyHint": True}
 
 mcp = FastMCP(
     name="mcp-github",
-    version="1.3.2",
+    version="1.4.0",
     instructions=(
         "Secure MCP server for GitHub repositories: issues, pull requests "
         "(open, review discussion, diffs, CI checks, merge), Actions runs and "
@@ -104,6 +105,40 @@ async def get_issue_tool(
         Issue details
     """
     return await get_issue(owner=owner, repo=repo, issue_number=issue_number)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_issue_comments_tool(
+    repo: str,
+    issue_number: Annotated[int, Field(ge=1)],
+    owner: str | None = None,
+    per_page: int = 30,
+    page: int = 1,
+) -> dict[str, Any]:
+    """List the comments on a GitHub issue or pull request conversation, oldest first.
+
+    Works for plain issues, which list_pull_request_comments_tool does not.
+    On a pull request it returns only the conversation comments; diff
+    comments and reviews come from list_pull_request_comments_tool.
+
+    Args:
+        repo: Repository name
+        issue_number: Issue or pull request number
+        owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+        per_page: Results per page, max 100 (default: 30)
+        page: Page number (default: 1)
+
+    Returns:
+        {"issue_number", "items", "pagination"?}; each item carries id,
+        author, author_association, created_at, updated_at, body, html_url
+    """
+    return await list_issue_comments(
+        owner=owner,
+        repo=repo,
+        issue_number=issue_number,
+        per_page=per_page,
+        page=page,
+    )
 
 
 @mcp.tool()
