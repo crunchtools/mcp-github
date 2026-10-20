@@ -817,6 +817,25 @@ class TestFineGrainedToken:
         assert verdict["ready_to_merge"] is False
         assert "check-runs" in verdict["truncated"]
 
+    async def test_checks_tool_reads_newest_runs_past_the_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mcp_github_crunchtools.tools import get_pull_request_checks
+        from mcp_github_crunchtools.tools import pull_requests as pr_mod
+
+        monkeypatch.setattr(pr_mod, "ACTIONS_MAX_RUNS", 1)
+        github = MockGitHub(
+            fail={"check_runs": DENIED},
+            jobs={7: [job("old", job_id=11)], 8: [job("new", job_id=12)]},
+        )
+        with _patch_transport(github):
+            verdict = await get_pull_request_checks(owner="o", repo="r", pull_number=12)
+
+        assert "/repos/o/r/actions/runs/7/jobs" not in github.paths()
+        assert [p["name"] for p in verdict["passed"]] == ["new"]
+        assert "/repos/o/r/actions/runs" in verdict["truncated"]
+        assert verdict["ready_to_merge"] is False
+
     async def test_no_required_checks_reports_no_source(self) -> None:
         github = MockGitHub()
 
