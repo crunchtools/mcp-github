@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-20
+
+### Added
+
+- `merge_pull_request_tool` and `get_pull_request_checks_tool` work with a
+  fine-grained token. GitHub cannot grant one the Checks permission, so
+  check-runs answers 403; the tools then read the head commit's Actions jobs
+  (Actions: read), each of which is a check run with the same id and name.
+  Only Actions-reported checks are visible that way, so the merge gate
+  refuses a required check that names another app, or that accepts any app
+  and has no commit status. Both results carry `checks_source`.
+
+### Fixed
+
+- `get_pull_request_checks_tool` reads every page of check runs, not just the
+  first, up to the merge gate's page limit; past it the verdict says
+  `truncated` and is not `ready_to_merge`.
+
 ## [1.4.0] - 2026-10-17
 
 ### Added

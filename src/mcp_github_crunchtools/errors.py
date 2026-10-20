@@ -44,6 +44,7 @@ class GitHubApiError(UserError):
 
     def __init__(self, code: int, message: str) -> None:
         super().__init__(f"GitHub API error {code}: {scrub_tokens(message)}")
+        self.status_code = code
 
 
 class NotFoundError(UserError):
