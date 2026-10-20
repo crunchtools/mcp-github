@@ -4,7 +4,8 @@ Tools for listing, fetching, diffing, checking, opening, merging, and
 discussing GitHub pull requests.
 """
 
-from typing import Any
+import asyncio
+from typing import Any, Protocol
 from urllib.parse import quote
 
 from ..client import GitHubClient, get_client
@@ -30,6 +31,7 @@ from ..models import (
     validate_positive_int,
     validate_ref,
 )
+from .actions import MAX_RUN_JOBS
 
 DIFF_ACCEPT = "application/vnd.github.diff"
 
@@ -44,6 +46,26 @@ MERGE_GATE_MAX_PAGES = 10
 
 # Check-run conclusions that satisfy a required check.
 PASSING_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
+
+# The GitHub Actions app. Every Actions job is a check run reported by it,
+# with the job's id and name.
+ACTIONS_APP_ID = 15368
+
+# Where the head commit's check runs were read from. A fine-grained token
+# cannot be granted Checks, so the check-runs endpoint answers it 403; the
+# Actions API (Actions: read) then stands in, seeing only Actions jobs.
+# How many workflow runs' jobs the Actions fallback reads at once, and how
+# many runs (one per workflow and event) it reads at all.
+ACTIONS_JOB_READS_AT_ONCE = 4
+ACTIONS_MAX_RUNS = 30
+
+SOURCE_CHECK_RUNS = "check-runs"
+SOURCE_ACTIONS = "actions"
+ACTIONS_SOURCE_NOTE = (
+    "Check runs were read from the Actions API because this token cannot read "
+    "check-runs (a fine-grained token cannot be granted Checks). Checks "
+    "reported by apps other than GitHub Actions are not visible."
+)
 
 # A required check: its context (check-run name or status context) and, when
 # the rule names one, the id of the GitHub App that must report it.
@@ -224,10 +246,24 @@ async def get_pull_request_checks(
     if not sha:
         raise ValidationError("Could not resolve pull request head SHA")
 
-    check_runs = await client.get(f"/repos/{owner}/{repo}/commits/{sha}/check-runs")
+    truncated: list[str] = []
+
+    async def read_some(
+        client: GitHubClient,
+        path: str,
+        key: str | None,
+        params: dict[str, Any] | None = None,
+        max_pages: int | None = None,
+    ) -> list[dict[str, Any]]:
+        items, complete = await _read_pages(client, path, key, params, max_pages)
+        if not complete:
+            truncated.append(path)
+        return items
+
+    check_runs, source = await _head_check_runs(client, owner, repo, sha, read_some)
     combined_status = await client.get(f"/repos/{owner}/{repo}/commits/{sha}/status")
 
-    buckets = _classify_checks(check_runs, combined_status)
+    buckets = _classify_checks({"check_runs": check_runs}, combined_status)
     failing = buckets["failing"]
     pending = buckets["pending"]
     skipped = buckets["skipped"]
@@ -236,12 +272,13 @@ async def get_pull_request_checks(
     mergeable = pr.get("mergeable")
     ready_to_merge = not failing and not pending and mergeable is not False
 
-    return {
+    verdict: dict[str, Any] = {
         "pull_number": pull_number,
         "head_sha": sha,
         "mergeable": mergeable,
         "mergeable_state": pr.get("mergeable_state", ""),
         "ready_to_merge": ready_to_merge,
+        "checks_source": source,
         "summary": {
             "passed": len(passed),
             "failing": len(failing),
@@ -253,6 +290,13 @@ async def get_pull_request_checks(
         "skipped": skipped,
         "passed": passed,
     }
+    if source == SOURCE_ACTIONS:
+        verdict["note"] = ACTIONS_SOURCE_NOTE
+    if truncated:
+        # A cut list cannot clear the PR: an unread page may hold a failure.
+        verdict["ready_to_merge"] = False
+        verdict["truncated"] = "Not every page was read of: " + ", ".join(truncated)
+    return verdict
 
 
 async def update_pull_request(
@@ -357,19 +401,38 @@ async def create_pull_request(
     }
 
 
-async def _read_all(client: GitHubClient, path: str, key: str | None) -> list[dict[str, Any]]:
-    """Read every page of a list for the merge gate, or refuse.
+class Reader(Protocol):
+    """Reads the pages of a list for the merge gate or the checks verdict."""
+
+    async def __call__(
+        self,
+        client: GitHubClient,
+        path: str,
+        key: str | None,
+        params: dict[str, Any] | None = None,
+        max_pages: int | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+
+async def _read_pages(
+    client: GitHubClient,
+    path: str,
+    key: str | None,
+    params: dict[str, Any] | None = None,
+    max_pages: int | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Read up to ``max_pages`` (default MERGE_GATE_MAX_PAGES) pages of a
+    list; API errors propagate.
 
     ``key`` names the list inside an object response (``check_runs``,
-    ``statuses``), whose length is known from ``total_count``; None means
-    the response is a bare list, paged by its Link header.
+    ``statuses``, ``jobs``), whose length is known from ``total_count``; None
+    means the response is a bare list, paged by its Link header. Returns the
+    items and whether they are all of them.
     """
     collected: list[dict[str, Any]] = []
-    for page in range(1, MERGE_GATE_MAX_PAGES + 1):
-        try:
-            result = await client.get(path, params={"per_page": MAX_PER_PAGE, "page": page})
-        except (GitHubApiError, NotFoundError, PermissionDeniedError, RateLimitError) as e:
-            raise MergeRefusedError(f"Refusing to merge: could not read {path}: {e}") from e
+    for page in range(1, (max_pages or MERGE_GATE_MAX_PAGES) + 1):
+        query = {**(params or {}), "per_page": MAX_PER_PAGE, "page": page}
+        result = await client.get(path, params=query)
         if key is None:
             items = result.get("items") or []
             more = "next_page" in result.get("pagination", {})
@@ -378,11 +441,99 @@ async def _read_all(client: GitHubClient, path: str, key: str | None) -> list[di
             more = bool(items) and len(collected) + len(items) < (result.get("total_count") or 0)
         collected.extend(item for item in items if isinstance(item, dict))
         if not more:
-            return collected
-    raise MergeRefusedError(
-        f"Refusing to merge: {path} has more than {MERGE_GATE_MAX_PAGES} pages; "
-        "the checks cannot be judged in full"
-    )
+            return collected, True
+    return collected, False
+
+
+async def _read_all(
+    client: GitHubClient,
+    path: str,
+    key: str | None,
+    params: dict[str, Any] | None = None,
+    max_pages: int | None = None,
+) -> list[dict[str, Any]]:
+    """Read every page of a list for the merge gate, or refuse."""
+    try:
+        items, complete = await _read_pages(client, path, key, params, max_pages)
+    except (GitHubApiError, NotFoundError, PermissionDeniedError, RateLimitError) as e:
+        raise MergeRefusedError(f"Refusing to merge: could not read {path}: {e}") from e
+    if not complete:
+        raise MergeRefusedError(
+            f"Refusing to merge: {path} has more than {max_pages or MERGE_GATE_MAX_PAGES} pages; "
+            "the checks cannot be judged in full"
+        )
+    return items
+
+
+def _job_as_run(job: dict[str, Any]) -> dict[str, Any]:
+    """An Actions job in the shape of the check run it is."""
+    return {
+        "id": job.get("id"),
+        "name": job.get("name"),
+        "status": job.get("status"),
+        "conclusion": job.get("conclusion"),
+        "html_url": job.get("html_url"),
+        "app": {"id": ACTIONS_APP_ID},
+    }
+
+
+async def _actions_check_runs(
+    client: GitHubClient, owner: str, repo: str, sha: str, read: Reader
+) -> list[dict[str, Any]]:
+    """The head commit's Actions jobs, as check runs.
+
+    Only the newest run of each workflow and event is read: an older run's
+    job is superseded by the newer run's job of the same name, and a job only
+    the older run had is then missing, which refuses rather than passes. Each
+    run lists the jobs of its latest attempt, up to MAX_RUN_JOBS, read
+    ACTIONS_JOB_READS_AT_ONCE runs at a time; more than ACTIONS_MAX_RUNS runs
+    are not judged.
+    """
+    runs_path = f"/repos/{owner}/{repo}/actions/runs"
+    workflow_runs = await read(client, runs_path, "workflow_runs", {"head_sha": sha})
+    newest: dict[tuple[Any, Any], int] = {}
+    for workflow_run in workflow_runs:
+        run_id = workflow_run.get("id")
+        key = (workflow_run.get("workflow_id"), workflow_run.get("event"))
+        if isinstance(run_id, int) and run_id > newest.get(key, 0):
+            newest[key] = run_id
+    if len(newest) > ACTIONS_MAX_RUNS:
+        raise MergeRefusedError(
+            f"Cannot judge the checks of {sha} from the Actions API: "
+            f"{len(newest)} workflows ran on it, more than {ACTIONS_MAX_RUNS}"
+        )
+    run_ids = sorted(newest.values())
+    gate = asyncio.Semaphore(ACTIONS_JOB_READS_AT_ONCE)
+
+    async def run_jobs(run_id: int) -> list[dict[str, Any]]:
+        async with gate:
+            jobs_path = f"{runs_path}/{run_id}/jobs"
+            return await read(client, jobs_path, "jobs", None, MAX_RUN_JOBS // MAX_PER_PAGE)
+
+    per_run = await asyncio.gather(*(run_jobs(run_id) for run_id in run_ids))
+    return [_job_as_run(job) for jobs in per_run for job in jobs if job.get("head_sha") == sha]
+
+
+async def _head_check_runs(
+    client: GitHubClient, owner: str, repo: str, sha: str, read: Reader
+) -> tuple[list[dict[str, Any]], str]:
+    """The head commit's check runs and where they were read from.
+
+    A token that may not read check-runs (any fine-grained token) gets 403
+    and the Actions jobs instead; any other error propagates. The client
+    maps a rate-limit 403 to RateLimitError, so a GitHubApiError 403 here is
+    a permission refusal. PermissionDeniedError is the client's 401, a token
+    GitHub rejects outright, and does not fall back. The merge gate's reader wraps it in
+    MergeRefusedError, keeping it as the cause.
+    """
+    path = f"/repos/{owner}/{repo}/commits/{sha}/check-runs"
+    try:
+        return await read(client, path, "check_runs", None), SOURCE_CHECK_RUNS
+    except (GitHubApiError, MergeRefusedError) as e:
+        cause = e.__cause__ if isinstance(e, MergeRefusedError) else e
+        if not (isinstance(cause, GitHubApiError) and cause.status_code == 403):
+            raise
+    return await _actions_check_runs(client, owner, repo, sha, read), SOURCE_ACTIONS
 
 
 def _app_id(value: object) -> int | None:
@@ -463,16 +614,24 @@ def _judge_run(run: dict[str, Any]) -> str | None:
     return None
 
 
-def _index_runs(check_runs: list[dict[str, Any]]) -> dict[RequiredCheck, dict[str, Any]]:
-    """The most recent (highest id) check run per (name, app id) and per
-    (name, None), the latter for checks any app may report."""
+def _index_runs(
+    check_runs: list[dict[str, Any]], any_app: bool = True
+) -> dict[RequiredCheck, dict[str, Any]]:
+    """The most recent (highest id) check run per (name, app id) and, when
+    ``any_app``, per (name, None) for checks any app may report.
+
+    Without ``any_app`` (the runs are only the Actions jobs, so another app's
+    run of the same name may be unseen) a check any app may report is judged
+    by its commit status alone, or is missing.
+    """
     index: dict[RequiredCheck, dict[str, Any]] = {}
     for run in sorted(check_runs, key=lambda r: r.get("id") or 0):
         name = run.get("name")
         if not isinstance(name, str):
             continue
         app_id = (run.get("app") or {}).get("id")
-        index[(name, None)] = run
+        if any_app:
+            index[(name, None)] = run
         if isinstance(app_id, int):
             index[(name, app_id)] = run
     return index
@@ -514,11 +673,10 @@ async def _gate_problems(
     repo: str,
     head_sha: str,
     required: set[RequiredCheck],
-) -> list[str]:
-    """One line per required check that the head commit does not satisfy."""
-    check_runs = await _read_all(
-        client, f"/repos/{owner}/{repo}/commits/{head_sha}/check-runs", "check_runs"
-    )
+) -> tuple[list[str], str]:
+    """One line per required check that the head commit does not satisfy,
+    and where the check runs were read from."""
+    check_runs, source = await _head_check_runs(client, owner, repo, head_sha, _read_all)
     raw_statuses = await _read_all(
         client, f"/repos/{owner}/{repo}/commits/{head_sha}/status", "statuses"
     )
@@ -529,13 +687,13 @@ async def _gate_problems(
         if isinstance(status.get("context"), str):
             statuses[status["context"]] = status
 
-    runs = _index_runs(check_runs)
+    runs = _index_runs(check_runs, any_app=source == SOURCE_CHECK_RUNS)
     problems = []
     for check in sorted(required, key=lambda c: (c[0], c[1] or 0)):
         reason = _judge_check(check, runs, statuses)
         if reason:
             problems.append(f"{check[0]}: {reason}")
-    return problems
+    return problems, source
 
 
 async def _head_and_base(
@@ -617,11 +775,17 @@ async def merge_pull_request(
             f"Refusing to merge: branch {base!r} requires no status checks. "
             "Pass allow_no_required_checks=True to merge without any."
         )
+    source: str | None = None
     if required:
-        problems = await _gate_problems(client, owner, repo, head_sha, required)
+        problems, source = await _gate_problems(client, owner, repo, head_sha, required)
         if problems:
+            via = (
+                " (check runs read from the Actions API; this token cannot read check-runs)"
+                if source == SOURCE_ACTIONS
+                else ""
+            )
             raise MergeRefusedError(
-                f"Refusing to merge: required checks are not green on {head_sha}: "
+                f"Refusing to merge: required checks are not green on {head_sha}{via}: "
                 + "; ".join(problems)
             )
 
@@ -643,6 +807,7 @@ async def merge_pull_request(
         "message": result.get("message"),
         "head_sha": head_sha,
         "required_checks": sorted({context for context, _ in required}),
+        "checks_source": source,
     }
 
 

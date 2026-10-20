@@ -56,12 +56,12 @@ permission the tool needs (see [Token permissions](#token-permissions)).
 | `list_pull_requests_tool` | List pull requests for a repository | Pull requests: read |
 | `get_pull_request_tool` | Get a single pull request by number | Pull requests: read |
 | `get_pull_request_diff_tool` | Get the unified diff for a pull request | Pull requests: read |
-| `get_pull_request_checks_tool` | CI verdict from check-runs and commit statuses; skipped is not failed | Pull requests: read, Commit statuses: read (and see the note under Token permissions) |
+| `get_pull_request_checks_tool` | CI verdict from check-runs and commit statuses; skipped is not failed | Pull requests: read, Commit statuses: read, Actions: read (and see the note under Token permissions) |
 | `list_pull_request_comments_tool` | Conversation comments, diff comments and reviews in one list, each tagged with its kind | Pull requests: read |
 | `create_pull_request_tool` | Open a pull request, optionally as a draft (*write*) | Pull requests: write |
 | `update_pull_request_tool` | Edit, close or reopen a pull request; does not merge (*write*) | Pull requests: write |
 | `reply_to_review_comment_tool` | Reply in the thread of a diff comment (*write*) | Pull requests: write |
-| `merge_pull_request_tool` | Merge, squash or rebase a pull request, only once the base branch's required checks are green on its head (see [The merge gate](#the-merge-gate)) (*write*) | Contents: write; Pull requests and Commit statuses: read |
+| `merge_pull_request_tool` | Merge, squash or rebase a pull request, only once the base branch's required checks are green on its head (see [The merge gate](#the-merge-gate)) (*write*) | Contents: write; Pull requests, Commit statuses and Actions: read |
 
 ### Actions (6 tools)
 
@@ -198,14 +198,23 @@ For a fine-grained personal access token, the repository permissions are:
 | Contents | `get_file_content_tool`, `list_repo_tree_tool` | `merge_pull_request_tool`, `create_release_tool` |
 | Issues | `list_issues_tool`, `get_issue_tool`, `list_issue_comments_tool` | `create_issue_tool`, `update_issue_tool`, `create_issue_comment_tool` |
 | Pull requests | `merge_pull_request_tool`, `list_pull_requests_tool`, `get_pull_request_tool`, `get_pull_request_diff_tool`, `get_pull_request_checks_tool`, `list_pull_request_comments_tool` | `create_pull_request_tool`, `update_pull_request_tool`, `reply_to_review_comment_tool`, `create_issue_comment_tool` on a PR |
-| Actions | `list_workflow_runs_tool`, `get_workflow_run_tool`, `get_failed_job_logs_tool` | `trigger_workflow_tool`, `rerun_workflow_run_tool`, `rerun_failed_jobs_tool` |
+| Actions | `list_workflow_runs_tool`, `get_workflow_run_tool`, `get_failed_job_logs_tool`, `get_pull_request_checks_tool`, `merge_pull_request_tool` | `trigger_workflow_tool`, `rerun_workflow_run_tool`, `rerun_failed_jobs_tool` |
 | Commit statuses | `get_pull_request_checks_tool`, `merge_pull_request_tool` | — |
 
-`get_pull_request_checks_tool` and `merge_pull_request_tool` read check-runs, and GitHub's permission table
-for fine-grained tokens lists no permission for that endpoint. It is readable
-on public repositories; on a private repository use a classic token or a
-GitHub App token. The search tools likewise have no permission of their own:
-they return what the token can already read.
+`get_pull_request_checks_tool` and `merge_pull_request_tool` read check-runs,
+and GitHub's permission table for fine-grained tokens has no permission for
+that endpoint: a fine-grained token gets 403 on a private repository. Both
+tools then read the head commit's GitHub Actions jobs instead (Actions: read).
+Every Actions job is a check run with the same id and name, so the verdict
+and the merge gate are the same for checks GitHub Actions reports. Checks from
+any other app are not visible that way, so the merge gate refuses a required
+check that names another app, or that accepts any app and has no commit
+status, as missing. `checks_source` in each result says which was read, and
+the checks verdict then carries a `note` saying other apps' checks are not
+visible. Only the newest run of each workflow and event is read, and a commit
+with runs of more than 30 workflows is not judged.
+
+The search tools have no permission of their own: they return what the token can already read.
 
 Three things worth knowing before granting write:
 
@@ -240,7 +249,8 @@ merges it:
 4. requires, for every required check on the head commit, a completed check
    run of that name concluding `success`, `skipped` or `neutral` (the most
    recent run of the name decides), or a commit status of `success`. A rule
-   that names an app accepts only that app's check runs. A missing, pending
+   that names an app accepts only that app's check runs. A token that cannot
+   read check-runs is judged on the Actions jobs (see above). A missing, pending
    or failed check refuses the merge, and the error lists each one and why;
 5. reads the pull request again and refuses if its head or base changed
    meanwhile (GitHub's merge call pins the head but not the base), then

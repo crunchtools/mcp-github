@@ -46,7 +46,7 @@ READ_ONLY = {"readOnlyHint": True}
 
 mcp = FastMCP(
     name="mcp-github",
-    version="1.4.0",
+    version="1.5.0",
     instructions=(
         "Secure MCP server for GitHub repositories: issues, pull requests "
         "(open, review discussion, diffs, CI checks, merge), Actions runs and "
@@ -305,7 +305,9 @@ async def get_pull_request_checks_tool(
     failing, pending, or skipped. SKIPPED checks are NOT failures. Use the
     returned ``ready_to_merge`` boolean as the signal for whether the PR is
     clear to merge (True only when nothing is failing or pending and the PR
-    is not known-unmergeable).
+    is not known-unmergeable). A token that cannot read check-runs (any
+    fine-grained token) gets the Actions jobs instead; ``checks_source`` says
+    which, and only Actions-reported checks are then visible.
 
     Args:
         repo: Repository name
@@ -407,7 +409,9 @@ async def merge_pull_request_tool(
     head; when branch protection cannot be read; and when the base branch
     requires no checks at all, unless ``allow_no_required_checks`` is True.
     Passing check runs conclude success, skipped or neutral. The merge is
-    pinned to the head SHA that was checked.
+    pinned to the head SHA that was checked. A token that cannot read
+    check-runs (any fine-grained token) is judged on the Actions jobs, and a
+    required check not reported by GitHub Actions is refused as missing.
 
     Args:
         repo: Repository name
