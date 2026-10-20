@@ -29,7 +29,7 @@ import argparse
 
 from .server import mcp
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 __all__ = ["main", "mcp"]
 
 
