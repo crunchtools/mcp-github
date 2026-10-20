@@ -5,7 +5,8 @@ discussing GitHub pull requests.
 """
 
 import asyncio
-from typing import Any, Protocol
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import quote
 
 from ..client import GitHubClient, get_client
@@ -247,20 +248,7 @@ async def get_pull_request_checks(
         raise ValidationError("Could not resolve pull request head SHA")
 
     truncated: list[str] = []
-
-    async def read_some(
-        client: GitHubClient,
-        path: str,
-        key: str | None,
-        params: dict[str, Any] | None = None,
-        max_pages: int | None = None,
-    ) -> list[dict[str, Any]]:
-        items, complete = await _read_pages(client, path, key, params, max_pages)
-        if not complete:
-            truncated.append(path)
-        return items
-
-    check_runs, source = await _head_check_runs(client, owner, repo, sha, read_some)
+    check_runs, source = await _head_check_runs(client, owner, repo, sha, truncated.append)
     combined_status = await client.get(f"/repos/{owner}/{repo}/commits/{sha}/status")
 
     buckets = _classify_checks({"check_runs": check_runs}, combined_status)
@@ -295,7 +283,7 @@ async def get_pull_request_checks(
     if truncated:
         # A cut list cannot clear the PR: an unread page may hold a failure.
         verdict["ready_to_merge"] = False
-        verdict["truncated"] = "Not every page was read of: " + ", ".join(truncated)
+        verdict["truncated"] = "Not everything was read of: " + ", ".join(truncated)
     return verdict
 
 
@@ -401,33 +389,34 @@ async def create_pull_request(
     }
 
 
-class Reader(Protocol):
-    """Reads the pages of a list for the merge gate or the checks verdict."""
+# Called with the path of a list that holds more than was read.
+OnCut = Callable[[str], None]
 
-    async def __call__(
-        self,
-        client: GitHubClient,
-        path: str,
-        key: str | None,
-        params: dict[str, Any] | None = None,
-        max_pages: int | None = None,
-    ) -> list[dict[str, Any]]: ...
+API_ERRORS = (GitHubApiError, NotFoundError, PermissionDeniedError, RateLimitError)
+
+
+def _refuse_cut(path: str) -> None:
+    """The merge gate does not judge a list it could not read in full."""
+    raise MergeRefusedError(
+        f"Refusing to merge: {path} lists more than the gate reads; "
+        "the checks cannot be judged in full"
+    )
 
 
 async def _read_pages(
     client: GitHubClient,
     path: str,
     key: str | None,
+    on_cut: OnCut,
     params: dict[str, Any] | None = None,
     max_pages: int | None = None,
-) -> tuple[list[dict[str, Any]], bool]:
+) -> list[dict[str, Any]]:
     """Read up to ``max_pages`` (default MERGE_GATE_MAX_PAGES) pages of a
-    list; API errors propagate.
+    list, calling ``on_cut`` if there were more; API errors propagate.
 
     ``key`` names the list inside an object response (``check_runs``,
     ``statuses``, ``jobs``), whose length is known from ``total_count``; None
-    means the response is a bare list, paged by its Link header. Returns the
-    items and whether they are all of them.
+    means the response is a bare list, paged by its Link header.
     """
     collected: list[dict[str, Any]] = []
     for page in range(1, (max_pages or MERGE_GATE_MAX_PAGES) + 1):
@@ -441,28 +430,17 @@ async def _read_pages(
             more = bool(items) and len(collected) + len(items) < (result.get("total_count") or 0)
         collected.extend(item for item in items if isinstance(item, dict))
         if not more:
-            return collected, True
-    return collected, False
+            return collected
+    on_cut(path)
+    return collected
 
 
-async def _read_all(
-    client: GitHubClient,
-    path: str,
-    key: str | None,
-    params: dict[str, Any] | None = None,
-    max_pages: int | None = None,
-) -> list[dict[str, Any]]:
+async def _read_all(client: GitHubClient, path: str, key: str | None) -> list[dict[str, Any]]:
     """Read every page of a list for the merge gate, or refuse."""
     try:
-        items, complete = await _read_pages(client, path, key, params, max_pages)
-    except (GitHubApiError, NotFoundError, PermissionDeniedError, RateLimitError) as e:
+        return await _read_pages(client, path, key, _refuse_cut)
+    except API_ERRORS as e:
         raise MergeRefusedError(f"Refusing to merge: could not read {path}: {e}") from e
-    if not complete:
-        raise MergeRefusedError(
-            f"Refusing to merge: {path} has more than {max_pages or MERGE_GATE_MAX_PAGES} pages; "
-            "the checks cannot be judged in full"
-        )
-    return items
 
 
 def _job_as_run(job: dict[str, Any]) -> dict[str, Any]:
@@ -478,7 +456,7 @@ def _job_as_run(job: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _actions_check_runs(
-    client: GitHubClient, owner: str, repo: str, sha: str, read: Reader
+    client: GitHubClient, owner: str, repo: str, sha: str, on_cut: OnCut
 ) -> list[dict[str, Any]]:
     """The head commit's Actions jobs, as check runs.
 
@@ -486,54 +464,53 @@ async def _actions_check_runs(
     job is superseded by the newer run's job of the same name, and a job only
     the older run had is then missing, which refuses rather than passes. Each
     run lists the jobs of its latest attempt, up to MAX_RUN_JOBS, read
-    ACTIONS_JOB_READS_AT_ONCE runs at a time; more than ACTIONS_MAX_RUNS runs
-    are not judged.
+    ACTIONS_JOB_READS_AT_ONCE runs at a time. Past ACTIONS_MAX_RUNS runs, only
+    the newest are read and ``on_cut`` is called.
     """
     runs_path = f"/repos/{owner}/{repo}/actions/runs"
-    workflow_runs = await read(client, runs_path, "workflow_runs", {"head_sha": sha})
+    workflow_runs = await _read_pages(
+        client, runs_path, "workflow_runs", on_cut, params={"head_sha": sha}
+    )
     newest: dict[tuple[Any, Any], int] = {}
     for workflow_run in workflow_runs:
         run_id = workflow_run.get("id")
         key = (workflow_run.get("workflow_id"), workflow_run.get("event"))
         if isinstance(run_id, int) and run_id > newest.get(key, 0):
             newest[key] = run_id
-    if len(newest) > ACTIONS_MAX_RUNS:
-        raise MergeRefusedError(
-            f"Cannot judge the checks of {sha} from the Actions API: "
-            f"{len(newest)} workflows ran on it, more than {ACTIONS_MAX_RUNS}"
-        )
     run_ids = sorted(newest.values())
+    if len(run_ids) > ACTIONS_MAX_RUNS:
+        on_cut(runs_path)
+        run_ids = run_ids[-ACTIONS_MAX_RUNS:]
     gate = asyncio.Semaphore(ACTIONS_JOB_READS_AT_ONCE)
 
     async def run_jobs(run_id: int) -> list[dict[str, Any]]:
         async with gate:
             jobs_path = f"{runs_path}/{run_id}/jobs"
-            return await read(client, jobs_path, "jobs", None, MAX_RUN_JOBS // MAX_PER_PAGE)
+            pages = MAX_RUN_JOBS // MAX_PER_PAGE
+            return await _read_pages(client, jobs_path, "jobs", on_cut, max_pages=pages)
 
     per_run = await asyncio.gather(*(run_jobs(run_id) for run_id in run_ids))
     return [_job_as_run(job) for jobs in per_run for job in jobs if job.get("head_sha") == sha]
 
 
 async def _head_check_runs(
-    client: GitHubClient, owner: str, repo: str, sha: str, read: Reader
+    client: GitHubClient, owner: str, repo: str, sha: str, on_cut: OnCut
 ) -> tuple[list[dict[str, Any]], str]:
     """The head commit's check runs and where they were read from.
 
     A token that may not read check-runs (any fine-grained token) gets 403
     and the Actions jobs instead; any other error propagates. The client
-    maps a rate-limit 403 to RateLimitError, so a GitHubApiError 403 here is
-    a permission refusal. PermissionDeniedError is the client's 401, a token
-    GitHub rejects outright, and does not fall back. The merge gate's reader wraps it in
-    MergeRefusedError, keeping it as the cause.
+    maps a rate-limit 403 to RateLimitError and a 401 (a token GitHub
+    rejects outright) to PermissionDeniedError, so a GitHubApiError 403 is a
+    permission refusal.
     """
     path = f"/repos/{owner}/{repo}/commits/{sha}/check-runs"
     try:
-        return await read(client, path, "check_runs", None), SOURCE_CHECK_RUNS
-    except (GitHubApiError, MergeRefusedError) as e:
-        cause = e.__cause__ if isinstance(e, MergeRefusedError) else e
-        if not (isinstance(cause, GitHubApiError) and cause.status_code == 403):
+        return await _read_pages(client, path, "check_runs", on_cut), SOURCE_CHECK_RUNS
+    except GitHubApiError as e:
+        if e.status_code != 403:
             raise
-    return await _actions_check_runs(client, owner, repo, sha, read), SOURCE_ACTIONS
+    return await _actions_check_runs(client, owner, repo, sha, on_cut), SOURCE_ACTIONS
 
 
 def _app_id(value: object) -> int | None:
@@ -676,7 +653,12 @@ async def _gate_problems(
 ) -> tuple[list[str], str]:
     """One line per required check that the head commit does not satisfy,
     and where the check runs were read from."""
-    check_runs, source = await _head_check_runs(client, owner, repo, head_sha, _read_all)
+    try:
+        check_runs, source = await _head_check_runs(client, owner, repo, head_sha, _refuse_cut)
+    except API_ERRORS as e:
+        raise MergeRefusedError(
+            f"Refusing to merge: could not read the check runs of {head_sha}: {e}"
+        ) from e
     raw_statuses = await _read_all(
         client, f"/repos/{owner}/{repo}/commits/{head_sha}/status", "statuses"
     )

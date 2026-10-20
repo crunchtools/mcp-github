@@ -538,7 +538,7 @@ class TestMergeGate:
             page_size=2,
         )
 
-        assert "more than 2 pages" in await refused(github)
+        assert "lists more than the gate reads" in await refused(github)
 
     async def test_pr_without_head_refused(self) -> None:
         from mcp_github_crunchtools.errors import MergeRefusedError
@@ -672,7 +672,7 @@ class TestFineGrainedToken:
             jobs={7: [job("test")], 8: [job("lint")]},
         )
 
-        assert "2 workflows ran on it, more than 1" in await refused(github)
+        assert "/actions/runs lists more than the gate reads" in await refused(github)
         assert not any(path.endswith("/jobs") for path in github.paths())
 
     async def test_any_app_check_not_satisfied_by_a_job(self) -> None:
@@ -716,7 +716,17 @@ class TestFineGrainedToken:
             jobs={7: [job("test")]},
         )
 
-        assert "could not read /repos/o/r/commits/" in await refused(github)
+        assert "could not read the check runs of" in await refused(github)
+        assert not any("/actions/" in path for path in github.paths())
+
+    async def test_rejected_token_does_not_fall_back(self) -> None:
+        github = MockGitHub(
+            rules=[ruleset(("test", ACTIONS_APP))],
+            fail={"check_runs": (401, "Bad credentials")},
+            jobs={7: [job("test")]},
+        )
+
+        assert "could not read the check runs of" in await refused(github)
         assert not any("/actions/" in path for path in github.paths())
 
     async def test_rate_limited_check_runs_do_not_fall_back(self) -> None:
@@ -727,7 +737,7 @@ class TestFineGrainedToken:
             jobs={7: [job("test")]},
         )
 
-        assert "could not read /repos/o/r/commits/" in await refused(github)
+        assert "could not read the check runs of" in await refused(github)
         assert not any("/actions/" in path for path in github.paths())
 
     async def test_too_many_jobs_in_a_run_refused(self) -> None:
@@ -739,7 +749,7 @@ class TestFineGrainedToken:
             jobs={7: [job("test", job_id=i) for i in range(1, MAX_RUN_JOBS + 2)]},
         )
 
-        assert "/actions/runs/7/jobs has more than 3 pages" in await refused(github)
+        assert "/actions/runs/7/jobs lists more than the gate reads" in await refused(github)
 
     async def test_too_many_workflow_run_pages_refused(
         self, monkeypatch: pytest.MonkeyPatch
@@ -754,7 +764,7 @@ class TestFineGrainedToken:
             page_size=1,
         )
 
-        assert "/actions/runs has more than 1 pages" in await refused(github)
+        assert "/actions/runs lists more than the gate reads" in await refused(github)
 
     async def test_unreadable_jobs_refuse(self) -> None:
         github = MockGitHub(
@@ -763,7 +773,7 @@ class TestFineGrainedToken:
             jobs={7: [job("test")]},
         )
 
-        assert "could not read /repos/o/r/actions/runs/7/jobs" in await refused(github)
+        assert "could not read the check runs of" in await refused(github)
 
     async def test_checks_tool_reads_jobs(self) -> None:
         from mcp_github_crunchtools.tools import get_pull_request_checks
@@ -779,6 +789,21 @@ class TestFineGrainedToken:
         assert "not visible" in verdict["note"]
         assert verdict["summary"] == {"passed": 1, "failing": 0, "pending": 0, "skipped": 1}
         assert verdict["ready_to_merge"] is True
+
+    async def test_checks_tool_reads_later_pages(self) -> None:
+        from mcp_github_crunchtools.tools import get_pull_request_checks
+
+        github = MockGitHub(
+            check_runs=[run("a", run_id=1), run("b", conclusion="failure", run_id=2)], page_size=1
+        )
+        with _patch_transport(github):
+            verdict = await get_pull_request_checks(owner="o", repo="r", pull_number=12)
+
+        pages = [r.url.params.get("page") for r in github.requests if "check-runs" in r.url.path]
+        assert pages == ["1", "2"]
+        assert [f["name"] for f in verdict["failing"]] == ["b"]
+        assert verdict["ready_to_merge"] is False
+        assert "truncated" not in verdict
 
     async def test_checks_tool_flags_truncation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from mcp_github_crunchtools.tools import get_pull_request_checks
