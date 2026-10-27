@@ -4,7 +4,7 @@
 > **Ratified:** 2026-06-14
 > **Amended:** 2026-10-14
 > **Status:** Active
-> **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.26.0
+> **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.27.0
 > **Profile:** MCP Server
 
 This file holds what is specific to mcp-github. The fleet rules and the MCP
