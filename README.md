@@ -69,7 +69,7 @@ permission the tool needs (see [Token permissions](#token-permissions)).
 |------|--------------|------------|
 | `list_workflow_runs_tool` | List workflow runs, filtered by branch or status | Actions: read |
 | `get_workflow_run_tool` | One run's status, conclusion, head SHA and jobs (no logs) | Actions: read |
-| `get_failed_job_logs_tool` | The last lines of the log of each failed job in a run, with ANSI escapes and timestamps removed | Actions: read |
+| `get_failed_job_logs_tool` | A failure summary (the cause lines) of each failed job in a run; the raw log tail with `include_raw_log` | Actions: read |
 | `trigger_workflow_tool` | Start a fresh run via `workflow_dispatch` (*write*) | Actions: write |
 | `rerun_workflow_run_tool` | Re-run every job of a run (*write*) | Actions: write |
 | `rerun_failed_jobs_tool` | Re-run only the failed jobs of a run (*write*) | Actions: write |
@@ -104,12 +104,16 @@ permission the tool needs (see [Token permissions](#token-permissions)).
   `pagination.next_page` for more.
 - `get_workflow_run_tool` lists up to 300 jobs; `jobs_truncated` says when the
   run has more.
-- `get_failed_job_logs_tool` returns at most 1000 lines per job (200 by
-  default), for at most 5 failed jobs, and at most 256 KiB of log text in
-  all, split evenly between the jobs. `tail_lines` in the result is the value
-  actually used, `failed_jobs_omitted` counts the jobs left out, and
-  `truncated` is set on a job whose log was cut short and on the result when
-  anything was. Only the first 300 jobs of a run are examined;
+- `get_failed_job_logs_tool` returns a `failure_summary` per job by default —
+  the tail lines that name the cause (error annotations, test failures,
+  tracebacks, non-zero exits) — scanning at most 1000 lines per job (200 by
+  default), for at most 5 failed jobs, and at most 256 KiB of log text in all,
+  split evenly between the jobs. Pass `include_raw_log=true` to also get the
+  full cleaned tail as `log`/`log_lines`; a scanning gateway may withhold that
+  raw tail where it delivers the summary. `tail_lines` in the result is the
+  value actually used, `failed_jobs_omitted` counts the jobs left out, and
+  `truncated` is set on a job whose log or summary was cut and on the result
+  when anything was. Only the first 300 jobs of a run are examined;
   `jobs_truncated` says when the run has more, and the counts then cover only
   those.
 

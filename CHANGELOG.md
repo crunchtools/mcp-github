@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-30
+
+### Changed
+
+- **Breaking:** `get_failed_job_logs_tool` no longer returns the raw log tail
+  (`log`/`log_lines`) by default. Each failed job now carries a
+  `failure_summary` instead — the tail lines that name the cause (error
+  annotations, test failures, tracebacks, non-zero exits), with
+  `summary_lines`. A failed job's log can run to the byte cap and, for a
+  repository whose CI quotes attack corpora (e.g. a prompt-injection defense
+  project), a scanning gateway may flag and withhold the whole tail, leaving
+  the operator unable to see why CI failed. The distilled summary is small and
+  signal-only, so it is far more likely to pass such a gateway. Pass
+  `include_raw_log=true` to also get the full cleaned tail as `log`/`log_lines`,
+  exactly as before (that path is what a gateway may still withhold). The
+  summary counts against the same 256 KiB result budget as the raw tail.
+
+### Added
+
+- `get_failed_job_logs_tool` gains an `include_raw_log` parameter (default
+  `false`).
+
 ## [1.6.0] - 2026-10-20
 
 ### Changed
