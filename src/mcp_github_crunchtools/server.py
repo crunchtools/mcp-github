@@ -46,7 +46,7 @@ READ_ONLY = {"readOnlyHint": True}
 
 mcp = FastMCP(
     name="mcp-github",
-    version="1.6.0",
+    version="2.0.0",
     instructions=(
         "Secure MCP server for GitHub repositories: issues, pull requests "
         "(open, review discussion, diffs, CI checks, merge), Actions runs and "
