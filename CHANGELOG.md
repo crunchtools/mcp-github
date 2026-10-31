@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Upgraded locked dependencies within their declared ranges to clear the
+  advisories the fleet dependency audit found (anyio, authlib, cryptography, dnspython, joserfc, opentelemetry-api, pydantic-settings, pyjwt).
+
 ## [2.0.0] - 2026-10-30
 
 ### Changed
