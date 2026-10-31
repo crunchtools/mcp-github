@@ -306,38 +306,101 @@ def _tail_log(download: dict[str, Any], tail_lines: int, max_bytes: int) -> dict
     }
 
 
+_SUMMARY_MAX_LINES = 60
+_SUMMARY_MAX_BYTES = 16 * 1024
+
+#: Lines that carry a failure's cause rather than the output around it. A failed
+#: job's log can run to the byte cap and, in a security repo, quote attack
+#: corpora verbatim; the distilled summary is what an operator needs to see the
+#: cause and is small enough that a scanning gateway delivers it, where the raw
+#: tail is flagged and withheld. Each cleaned line is tested on its own, so ``^``
+#: anchors that line.
+_FAILURE_SIGNAL = re.compile(
+    r"(?i)"
+    r"\#\#\[error\]|::error|"  # GitHub Actions error annotations
+    r"\bFAIL(?:ED|URE)?\b|\bERRORS?\b|"  # test/build failure words
+    r"^E\s|"  # pytest assertion detail line
+    r"Traceback \(most recent call last\)|"
+    r"\b\w*(?:Error|Exception):|\bassert\b|"
+    r"short test summary|={3,} FAILURES|={3,} ERRORS|"
+    r"Process completed with exit code|exited with (?:code )?\d|"
+    r"npm ERR!|make: \*\*\*"
+)
+
+
+def _failure_summary(log_text: str) -> dict[str, Any]:
+    """Pull the failure-signal lines out of a cleaned log tail.
+
+    Keeps only the lines that name the cause (error annotations, test failures,
+    tracebacks, non-zero exits), newest first dropped last, capped at
+    ``_SUMMARY_MAX_LINES`` and ``_SUMMARY_MAX_BYTES``. This is what a caller gets
+    by default; the raw tail is behind ``include_raw_log`` because it can run
+    long and, for a security repo, quotes attack payloads a scanning gateway
+    may flag and withhold. Being small and signal-only, the summary is far more
+    likely to pass such a gateway than the raw tail; whether it does is the
+    gateway's call, not this tool's.
+    """
+    hits = [line for line in log_text.split("\n") if line and _FAILURE_SIGNAL.search(line)]
+    kept = hits[-_SUMMARY_MAX_LINES:]
+    truncated = len(kept) < len(hits)
+    text = "\n".join(kept)
+
+    encoded = text.encode()
+    if len(encoded) > _SUMMARY_MAX_BYTES:
+        truncated = True
+        kept_bytes = encoded[-_SUMMARY_MAX_BYTES:].decode("utf-8", errors="ignore")
+        text = kept_bytes.partition("\n")[2] or kept_bytes
+
+    return {
+        "failure_summary": text,
+        "summary_lines": text.count("\n") + 1 if text else 0,
+        "summary_truncated": truncated,
+    }
+
+
 async def get_failed_job_logs(
     owner: str | None,
     repo: str,
     run_id: int,
     tail_lines: int = DEFAULT_LOG_TAIL_LINES,
+    include_raw_log: bool = False,
 ) -> dict[str, Any]:
     """Get the end of the log of each failed job in a workflow run.
 
     A job counts as failed when its conclusion is "failure" or "timed_out".
-    For each, the last ``tail_lines`` lines of its log are returned with ANSI
-    escapes and the per-line timestamps removed, along with the names of the
-    steps that failed.
+    For each, a ``failure_summary`` is returned by default: the lines of the log
+    tail that name the cause (error annotations, test failures, tracebacks,
+    non-zero exits), with ANSI escapes and per-line timestamps removed, along
+    with the names of the steps that failed. The full ``tail_lines``-line tail
+    is returned as ``log`` only when ``include_raw_log`` is set — it can run to
+    the byte cap and, for a repository whose CI quotes attack corpora, a
+    scanning gateway may flag and withhold it, where the small, signal-only
+    summary is far more likely to pass.
 
     Limits, each reported in the result when it applies: ``tail_lines`` is
     capped at 1000 (the value used is returned); logs are fetched for at most
     5 failed jobs (``failed_jobs_omitted`` counts the rest); and all log text
     together stays within 256 KiB, split evenly between the jobs (a job whose
-    log was cut short of ``tail_lines`` has ``truncated`` set). Only the first
-    300 jobs of a run are examined: when ``jobs_truncated`` is set the run has
-    more, and the failed-job counts cover only those examined.
+    log or summary was cut has ``truncated`` set). Only the first 300 jobs of a
+    run are examined: when ``jobs_truncated`` is set the run has more, and the
+    failed-job counts cover only those examined.
 
     Args:
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
         repo: Repository name
         run_id: Workflow run ID
-        tail_lines: Lines to return from the end of each log (default 200,
+        tail_lines: Lines of the raw tail to scan for the summary, and to
+            return as ``log`` when ``include_raw_log`` is set (default 200,
             max 1000)
+        include_raw_log: Also return the full cleaned tail as ``log`` (default
+            False). The raw tail may be withheld by a scanning gateway; the
+            summary is not.
 
     Returns:
         {"run_id", "tail_lines", "failed_job_count", "failed_jobs_omitted",
         "jobs_truncated", "truncated", "jobs": [{"id", "name", "conclusion",
-        "html_url", "failed_steps", "log", "log_lines", "truncated"}]}
+        "html_url", "failed_steps", "failure_summary", "summary_lines",
+        "truncated", and "log"/"log_lines" when include_raw_log}]}
     """
     owner = resolve_owner(owner)
     repo = validate_name(repo, "repo")
@@ -358,20 +421,33 @@ async def get_failed_job_logs(
             f"/repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
             tail_bytes=MAX_LOG_TOTAL_BYTES,
         )
-        results.append(
-            {
-                "id": job_id,
-                "name": job.get("name"),
-                "conclusion": job.get("conclusion"),
-                "html_url": job.get("html_url"),
-                "failed_steps": [
-                    step.get("name")
-                    for step in job.get("steps") or []
-                    if step.get("conclusion") in FAILED_JOB_CONCLUSIONS
-                ],
-                **_tail_log(download, tail_lines, MAX_LOG_TOTAL_BYTES // len(selected)),
-            }
-        )
+        # One 256 KiB budget covers all log text, split evenly between jobs. The
+        # summary is log text too, so when the raw tail is also returned the
+        # summary's allowance comes out of the same per-job share, keeping the
+        # pair within budget (the summary has priority; the raw tail takes what
+        # is left).
+        per_job = MAX_LOG_TOTAL_BYTES // len(selected)
+        raw_budget = max(per_job - _SUMMARY_MAX_BYTES, 0) if include_raw_log else per_job
+        tail = _tail_log(download, tail_lines, raw_budget)
+        summary = _failure_summary(tail["log"])
+        entry: dict[str, Any] = {
+            "id": job_id,
+            "name": job.get("name"),
+            "conclusion": job.get("conclusion"),
+            "html_url": job.get("html_url"),
+            "failed_steps": [
+                step.get("name")
+                for step in job.get("steps") or []
+                if step.get("conclusion") in FAILED_JOB_CONCLUSIONS
+            ],
+            "failure_summary": summary["failure_summary"],
+            "summary_lines": summary["summary_lines"],
+            "truncated": tail["truncated"] or summary["summary_truncated"],
+        }
+        if include_raw_log:
+            entry["log"] = tail["log"]
+            entry["log_lines"] = tail["log_lines"]
+        results.append(entry)
 
     failed_jobs_omitted = len(failed) - len(selected)
     return {

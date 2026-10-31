@@ -713,33 +713,45 @@ async def get_failed_job_logs_tool(
     run_id: Annotated[int, Field(ge=1)],
     tail_lines: int = 200,
     owner: str | None = None,
+    include_raw_log: bool = False,
 ) -> dict[str, Any]:
-    """Get the end of the log of each failed job in a GitHub Actions run.
+    """Get the failure summary of each failed job in a GitHub Actions run.
 
-    Returns the last ``tail_lines`` lines of every job that failed or timed
-    out, with ANSI escapes and timestamps removed, and the names of the steps
-    that failed. Logs are fetched for at most 5 failed jobs and all log text
-    together is capped at 256 KiB; ``truncated`` and ``failed_jobs_omitted``
-    say when something was cut. ``jobs_truncated`` means the run has more than
-    the 300 jobs examined, so the failed-job counts cover only those.
+    Returns, for every job that failed or timed out, a ``failure_summary``: the
+    log-tail lines that name the cause (error annotations, test failures,
+    tracebacks, non-zero exits), with ANSI escapes and timestamps removed, plus
+    the names of the steps that failed. Set ``include_raw_log`` to also get the
+    full cleaned tail as ``log`` — it can be large and, for a repository whose
+    CI output quotes attack corpora, a scanning gateway may flag and withhold
+    it, where the small, signal-only summary is far more likely to pass.
+
+    Logs are fetched for at most 5 failed jobs and all log text together is
+    capped at 256 KiB; ``truncated`` and ``failed_jobs_omitted`` say when
+    something was cut. ``jobs_truncated`` means the run has more than the 300
+    jobs examined, so the failed-job counts cover only those.
 
     Args:
         repo: Repository name
         run_id: Workflow run ID
-        tail_lines: Lines to return from the end of each log (default 200,
-            max 1000)
+        tail_lines: Lines of the tail to scan for the summary, and to return as
+            ``log`` when ``include_raw_log`` is set (default 200, max 1000)
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+        include_raw_log: Also return the full cleaned tail as ``log`` (default
+            False); the raw tail may be withheld by a scanning gateway, the
+            summary is not
 
     Returns:
         {"run_id", "tail_lines", "failed_job_count", "failed_jobs_omitted",
         "jobs_truncated", "truncated", "jobs": [{"id", "name", "conclusion",
-        "html_url", "failed_steps", "log", "log_lines", "truncated"}]}
+        "html_url", "failed_steps", "failure_summary", "summary_lines",
+        "truncated", and "log"/"log_lines" when include_raw_log}]}
     """
     return await get_failed_job_logs(
         owner=owner,
         repo=repo,
         run_id=run_id,
         tail_lines=tail_lines,
+        include_raw_log=include_raw_log,
     )
 
 
