@@ -1389,6 +1389,54 @@ def _log_lines(count: int, text: str = "line") -> bytes:
     ).encode()
 
 
+class TestFailureSummary:
+    """Boundary conditions of the failure-summary extractor."""
+
+    def test_line_cap_keeps_the_newest(self) -> None:
+        from mcp_github_crunchtools.tools.actions import _SUMMARY_MAX_LINES, _failure_summary
+
+        lines = [f"FAILED case {i}" for i in range(_SUMMARY_MAX_LINES + 20)]
+        result = _failure_summary("\n".join(lines))
+
+        kept = result["failure_summary"].split("\n")
+        assert len(kept) == _SUMMARY_MAX_LINES
+        assert result["summary_lines"] == _SUMMARY_MAX_LINES
+        assert result["summary_truncated"] is True
+        assert kept[-1] == lines[-1]  # newest kept
+        assert kept[0] == lines[20]  # oldest 20 dropped
+
+    def test_byte_cap_trims_from_the_start_on_a_line(self) -> None:
+        from mcp_github_crunchtools.tools.actions import _SUMMARY_MAX_BYTES, _failure_summary
+
+        # Few, very long signal lines, so the byte cap bites before the line cap.
+        big = [f"ERROR {'x' * 4000} {i}" for i in range(10)]
+        result = _failure_summary("\n".join(big))
+
+        assert result["summary_truncated"] is True
+        assert len(result["failure_summary"].encode()) <= _SUMMARY_MAX_BYTES
+        kept = result["failure_summary"].split("\n")
+        assert kept[0].startswith("ERROR ")  # cut landed on a line boundary
+        assert kept[-1] == big[-1]  # newest full line retained
+
+    def test_byte_cap_handles_multibyte_utf8(self) -> None:
+        from mcp_github_crunchtools.tools.actions import _SUMMARY_MAX_BYTES, _failure_summary
+
+        # Multibyte chars on signal lines: the byte cut must not raise and must
+        # stay within the cap (errors="ignore" drops a split code point).
+        big = [f"ERROR {'é' * 3000} {i}" for i in range(10)]
+        result = _failure_summary("\n".join(big))
+
+        assert result["summary_truncated"] is True
+        assert len(result["failure_summary"].encode()) <= _SUMMARY_MAX_BYTES
+        result["failure_summary"].encode().decode()  # still valid text
+
+    def test_no_signal_is_empty(self) -> None:
+        from mcp_github_crunchtools.tools.actions import _failure_summary
+
+        result = _failure_summary("just some normal output\nnothing to see here\n")
+        assert result == {"failure_summary": "", "summary_lines": 0, "summary_truncated": False}
+
+
 class TestFailedJobLogs:
     """Tests for get_failed_job_logs and the redirect it follows."""
 
