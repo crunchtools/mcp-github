@@ -51,9 +51,7 @@ async def get_file_content(
 
     client = get_client()
     params = {"ref": ref} if ref else None
-    result = await client.get(
-        f"/repos/{owner}/{repo}/contents/{encoded_path}", params=params
-    )
+    result = await client.get(f"/repos/{owner}/{repo}/contents/{encoded_path}", params=params)
 
     if isinstance(result.get("content"), list):
         raise ValidationError("path refers to a directory, not a file")
@@ -119,6 +117,4 @@ async def list_repo_tree(
 
     client = get_client()
     params = {"recursive": "1"} if recursive else None
-    return await client.get(
-        f"/repos/{owner}/{repo}/git/trees/{encoded_sha}", params=params
-    )
+    return await client.get(f"/repos/{owner}/{repo}/git/trees/{encoded_sha}", params=params)
