@@ -165,9 +165,9 @@ class TestReadOnlyAnnotation:
         with _patch_client(_mock_response(json_data=READ_BODY)) as client_cls:
             await mcp.call_tool(name, READ_ONLY_CALLS[name])
 
-        request = client_cls.return_value.request
-        assert request.await_count >= 1
-        for call in request.await_args_list:
+        build = client_cls.return_value.build_request
+        assert build.call_count >= 1
+        for call in build.call_args_list:
             assert call.kwargs["method"] in READ_METHODS
             assert call.kwargs["json"] is None
 
@@ -425,7 +425,7 @@ class TestIssueTools:
             result = await list_issue_comments(
                 owner="o", repo="r", issue_number=42, per_page=500, page=2
             )
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["method"] == "GET"
             assert call.kwargs["url"] == "/repos/o/r/issues/42/comments"
             assert call.kwargs["params"] == {"per_page": 100, "page": 2}
@@ -451,7 +451,7 @@ class TestIssueTools:
         with _patch_client(_mock_response(json_data=[])) as mock_client:
             with pytest.raises(ValueError, match="positive integer"):
                 await list_issue_comments(owner="o", repo="r", issue_number=0)
-            mock_client.return_value.request.assert_not_awaited()
+            mock_client.return_value.build_request.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_list_issue_comments_not_found(self) -> None:
@@ -485,7 +485,7 @@ class TestIssueTools:
                 body="details",
                 labels=["bug"],
             )
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["json"]["title"] == "Bug found"
             assert call.kwargs["json"]["labels"] == ["bug"]
 
@@ -515,7 +515,7 @@ class TestIssueTools:
                 state="closed",
                 state_reason="completed",
             )
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["method"] == "PATCH"
             assert call.kwargs["json"]["state"] == "closed"
             assert call.kwargs["json"]["state_reason"] == "completed"
@@ -537,7 +537,7 @@ class TestIssueTools:
 
         with _patch_client(resp) as mock_client:
             result = await update_pull_request(owner="o", repo="r", pull_number=3, state="closed")
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["method"] == "PATCH"
             assert "/pulls/3" in call.kwargs["url"]
             assert call.kwargs["json"]["state"] == "closed"
@@ -602,7 +602,7 @@ class TestPullRequestTools:
 
         with _patch_client(resp) as mock_client:
             result = await get_pull_request_diff(owner="o", repo="r", pull_number=5)
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["headers"]["Accept"] == "application/vnd.github.diff"
 
         assert "diff --git" in result["content"]
@@ -720,7 +720,7 @@ class TestPullRequestTools:
                 body="Why and how.",
                 draft=True,
             )
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["method"] == "POST"
             assert call.kwargs["url"] == "/repos/o/r/pulls"
             assert call.kwargs["json"] == {
@@ -750,7 +750,7 @@ class TestPullRequestTools:
             await create_pull_request(
                 owner="o", repo="r", title="Fix", head="alice:fix/typo", base="main"
             )
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["json"]["head"] == "alice:fix/typo"
             assert call.kwargs["json"]["draft"] is False
 
@@ -777,7 +777,7 @@ class TestPullRequestTools:
         with _patch_client(_mock_response(json_data={})) as mock_client:
             with pytest.raises((ValueError, ValidationError), match=r".+"):
                 await create_pull_request(**arguments)
-            mock_client.return_value.request.assert_not_awaited()
+            mock_client.return_value.build_request.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_create_pull_request_github_error(self) -> None:
@@ -808,7 +808,7 @@ class TestPullRequestTools:
         with _patch_client(_mock_response(json_data={})) as mock_client:
             with pytest.raises((ValueError, ValidationError), match=r".+"):
                 await merge_pull_request(owner="o", repo="r", **arguments)
-            mock_client.return_value.request.assert_not_awaited()
+            mock_client.return_value.build_request.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_list_pull_request_comments_combines_three_kinds(self) -> None:
@@ -867,7 +867,7 @@ class TestPullRequestTools:
 
         with _patch_client_sequence(issue_comments, review_comments, reviews) as mock_client:
             result = await list_pull_request_comments(owner="o", repo="r", pull_number=5)
-            calls = mock_client.return_value.request.call_args_list
+            calls = mock_client.return_value.build_request.call_args_list
             assert [call.kwargs["url"] for call in calls] == [
                 "/repos/o/r/issues/5/comments",
                 "/repos/o/r/pulls/5/comments",
@@ -931,7 +931,7 @@ class TestPullRequestTools:
 
         with _patch_client_sequence(first, second, empty, empty) as mock_client:
             result = await list_pull_request_comments(owner="o", repo="r", pull_number=5)
-            calls = mock_client.return_value.request.call_args_list
+            calls = mock_client.return_value.build_request.call_args_list
             assert [(call.kwargs["url"], call.kwargs["params"]["page"]) for call in calls] == [
                 ("/repos/o/r/issues/5/comments", 1),
                 ("/repos/o/r/issues/5/comments", 2),
@@ -955,7 +955,7 @@ class TestPullRequestTools:
 
         with _patch_client(endless) as mock_client:
             result = await list_pull_request_comments(owner="o", repo="r", pull_number=5)
-            assert mock_client.return_value.request.await_count == 9
+            assert mock_client.return_value.build_request.call_count == 9
 
         assert result["truncated"] is True
         assert result["truncated_kinds"] == ["issue_comment", "review_comment", "review"]
@@ -969,7 +969,7 @@ class TestPullRequestTools:
         with _patch_client(_mock_response(json_data=[])) as mock_client:
             with pytest.raises(ValueError, match="positive integer"):
                 await list_pull_request_comments(owner="o", repo="r", pull_number=0)
-            mock_client.return_value.request.assert_not_awaited()
+            mock_client.return_value.build_request.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_list_pull_request_comments_not_found(self) -> None:
@@ -998,7 +998,7 @@ class TestPullRequestTools:
             pytest.raises(ValidationError, match="#5 is an issue, not a pull request"),
         ):
             await list_pull_request_comments(owner="o", repo="r", pull_number=5)
-        calls = mock_client.return_value.request.call_args_list
+        calls = mock_client.return_value.build_request.call_args_list
         assert calls[-1].kwargs["url"] == "/repos/o/r/issues/5"
 
     @pytest.mark.asyncio
@@ -1033,7 +1033,7 @@ class TestPullRequestTools:
             result = await reply_to_review_comment(
                 owner="o", repo="r", pull_number=5, comment_id=20, body="fixed in abc1234"
             )
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["method"] == "POST"
             assert call.kwargs["url"] == "/repos/o/r/pulls/5/comments/20/replies"
             assert call.kwargs["json"] == {"body": "fixed in abc1234"}
@@ -1062,7 +1062,7 @@ class TestPullRequestTools:
         with _patch_client(_mock_response(json_data={})) as mock_client:
             with pytest.raises(ValueError, match=r".+"):
                 await reply_to_review_comment(owner="o", repo="r", **arguments)
-            mock_client.return_value.request.assert_not_awaited()
+            mock_client.return_value.build_request.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reply_to_review_comment_not_found(self) -> None:
@@ -1125,7 +1125,7 @@ class TestActionsTools:
             result = await trigger_workflow(
                 owner="o", repo="r", workflow_id="build.yml", ref="main"
             )
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["method"] == "POST"
             assert call.kwargs["url"].endswith("/actions/workflows/build.yml/dispatches")
             assert call.kwargs["json"] == {"ref": "main"}
@@ -1146,7 +1146,7 @@ class TestActionsTools:
 
         with _patch_client_sequence(repo_resp, dispatch_resp) as mock_client:
             result = await trigger_workflow(owner="o", repo="r", workflow_id="build.yml")
-            calls = mock_client.return_value.request.call_args_list
+            calls = mock_client.return_value.build_request.call_args_list
             assert calls[0].kwargs["url"].endswith("/repos/o/r")
             assert calls[1].kwargs["json"] == {"ref": "trunk"}
 
@@ -1167,7 +1167,7 @@ class TestActionsTools:
                 ref="main",
                 inputs={"reason": "cve-refresh"},
             )
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["json"] == {
                 "ref": "main",
                 "inputs": {"reason": "cve-refresh"},
@@ -1192,7 +1192,7 @@ class TestActionsTools:
 
         with _patch_client(resp) as mock_client:
             result = await rerun_workflow_run(owner="o", repo="r", run_id=42)
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["method"] == "POST"
             assert call.kwargs["url"].endswith("/actions/runs/42/rerun")
 
@@ -1207,7 +1207,7 @@ class TestActionsTools:
 
         with _patch_client(resp) as mock_client:
             result = await rerun_failed_jobs(owner="o", repo="r", run_id=42)
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["url"].endswith("/actions/runs/42/rerun-failed-jobs")
 
         assert result == {"status": "rerun_requested", "run_id": 42}
@@ -1248,7 +1248,7 @@ class TestActionsTools:
 
         with _patch_client_sequence(run, jobs) as mock_client:
             result = await get_workflow_run(owner="o", repo="r", run_id=77)
-            calls = mock_client.return_value.request.call_args_list
+            calls = mock_client.return_value.build_request.call_args_list
             assert [call.kwargs["url"] for call in calls] == [
                 "/repos/o/r/actions/runs/77",
                 "/repos/o/r/actions/runs/77/jobs",
@@ -1286,7 +1286,7 @@ class TestActionsTools:
 
         with _patch_client(page) as mock_client:
             result = await get_workflow_run(owner="o", repo="r", run_id=77)
-            calls = mock_client.return_value.request.call_args_list
+            calls = mock_client.return_value.build_request.call_args_list
             assert [call.kwargs["params"] for call in calls[1:]] == [
                 {"per_page": 100, "page": 1},
                 {"per_page": 100, "page": 2},
@@ -1303,7 +1303,7 @@ class TestActionsTools:
         with _patch_client(_mock_response(json_data={})) as mock_client:
             with pytest.raises(ValueError, match="positive integer"):
                 await get_workflow_run(owner="o", repo="r", run_id=0)
-            mock_client.return_value.request.assert_not_awaited()
+            mock_client.return_value.build_request.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_workflow_run_not_found(self) -> None:
@@ -1875,7 +1875,7 @@ class TestReleaseTools:
 
         with _patch_client(resp) as mock_client:
             result = await create_release(owner="o", repo="r", tag_name="v1.2.0")
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["method"] == "POST"
             assert call.kwargs["url"] == "/repos/o/r/releases"
             assert call.kwargs["json"] == {
@@ -1913,7 +1913,7 @@ class TestReleaseTools:
                 prerelease=True,
                 generate_release_notes=True,
             )
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["json"] == {
                 "tag_name": "v2.0.0-rc.1",
                 "target_commitish": "release/2.0",
@@ -1936,7 +1936,7 @@ class TestReleaseTools:
             await create_release(
                 owner="o", repo="r", tag_name="v1.2.0", target_commitish=blank, name=blank
             )
-            body = mock_client.return_value.request.call_args.kwargs["json"]
+            body = mock_client.return_value.build_request.call_args.kwargs["json"]
             assert "target_commitish" not in body
             assert "name" not in body
 
@@ -1958,7 +1958,7 @@ class TestReleaseTools:
         with _patch_client(_mock_response(json_data={})) as mock_client:
             with pytest.raises(ValueError, match=r".+"):
                 await create_release(owner="o", repo="r", **arguments)
-            mock_client.return_value.request.assert_not_awaited()
+            mock_client.return_value.build_request.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_create_release_github_error(self) -> None:
@@ -2054,7 +2054,7 @@ class TestFileTools:
 
         with _patch_client(resp) as mock_client:
             await list_repo_tree(owner="o", repo="r", tree_sha="main", recursive=True)
-            call = mock_client.return_value.request.call_args
+            call = mock_client.return_value.build_request.call_args
             assert call.kwargs["params"] == {"recursive": "1"}
 
 

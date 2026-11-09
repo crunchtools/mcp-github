@@ -6,6 +6,50 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-09
+
+### Fixed
+
+- **The JSON path had no ceiling.** The response size limit read the
+  `content-length` header and nothing else, so a reply without that header was
+  read whole into memory. The job-log download has always read in bounded
+  pieces, which is what made the gap easy to miss: the repo looked like it
+  streamed because one of its two read paths did. The JSON path now reads in
+  bounded pieces too, measured before each chunk is copied in.
+
+- **An error that is not GitHub's JSON shape says what it was.** It arrived as
+  `Unknown error` or 200 bare characters of body with no indication of where
+  they came from, so an Enterprise login page, a proxy error and the API
+  refusing something were one message. Such a body is now quoted, bounded,
+  alongside the method, URL, status and content-type of the request it
+  answered. GitHub's own `message` is still used verbatim when present, now
+  length-bounded.
+
+- **The URL in an error carries no secret.** Userinfo is dropped, and
+  `access_token` — GitHub's own retired query-string auth — along with
+  `client_secret`, `code` and `token` are redacted by name. By name rather
+  than by dropping the query string, because `per_page`, `state` and `sha` are
+  the diagnosis.
+
+### Added
+
+- **The client says what it is.** Requests carry
+  `User-Agent: mcp-github-crunchtools/<version> (+<repo url>)`, with the
+  version read from installed package metadata. GitHub asks API clients to
+  send one, and httpx's default `python-httpx/<version>` is what bot
+  protection answers with a challenge page (RT #1596).
+
+### Changed
+
+- Client tests drive `build_request` and `send` rather than `request`, because
+  the client now streams. The contract tests in
+  `tests/test_http_contract.py` use the existing `_patch_transport`, which
+  gives them a real `httpx.AsyncClient`: the agent string and the bounded read
+  are the client's own behaviour, so a mock standing in for it cannot see them.
+
+- Inherits constitution v1.36.0, whose MCP Server profile 1.8.0 states the
+  outbound HTTP contract (RT #1601).
+
 ## [2.0.1] - 2026-10-31
 
 ### Security
