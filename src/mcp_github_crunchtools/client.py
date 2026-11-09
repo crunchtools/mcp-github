@@ -5,9 +5,11 @@ All requests go through this client to ensure consistent security practices.
 """
 
 import ipaddress
+import json
 import logging
 import re
 import time
+from importlib.metadata import version
 from typing import Any
 from urllib.parse import urlparse
 
@@ -44,6 +46,62 @@ def _retry_after_seconds(headers: httpx.Headers) -> int | None:
 
 
 MAX_RESPONSE_SIZE = 10 * 1024 * 1024
+BODY_SNIPPET_CHARS = 200
+ELLIPSIS = "..."
+
+
+def _body_snippet(body: bytes) -> str:
+    """A short, single-line excerpt of a response body, for an error message."""
+    prefix = body[: BODY_SNIPPET_CHARS * 4]
+    collapsed = " ".join(prefix.decode("utf-8", errors="replace").split())
+    if not collapsed:
+        return "<empty body>"
+    if len(collapsed) > BODY_SNIPPET_CHARS or len(body) > len(prefix):
+        return collapsed[: BODY_SNIPPET_CHARS - len(ELLIPSIS)] + ELLIPSIS
+    return collapsed
+
+
+# Query parameters whose value is a secret rather than part of the request.
+# `access_token` is GitHub's own retired query-string auth, and an Enterprise
+# host in front of a proxy can take any of these.
+REDACTED_PARAMS = frozenset({"access_token", "client_secret", "code", "token"})
+
+
+def _safe_url(url: httpx.URL) -> httpx.URL:
+    """A URL fit to appear in an error message (Layer 1).
+
+    Userinfo first: it carries its secret before the path, where redacting
+    query parameters never reaches it. The rest is redacted by name, because
+    `per_page`, `state` and `sha` are the diagnosis.
+    """
+    url = url.copy_with(userinfo=b"")
+    for name in REDACTED_PARAMS & set(url.params):
+        url = url.copy_set_param(name, "***")
+    return url
+
+
+def _where(response: httpx.Response) -> str:
+    """Which request a response answered, for an error message.
+
+    The requested URL rather than the path: `GITHUB_API_BASE_URL` points this
+    client at github.com or at an Enterprise host, and a base URL that answers
+    with a login page is not something a path alone can describe.
+    """
+    return (
+        f"{response.request.method} {_safe_url(response.request.url)} "
+        f"(HTTP {response.status_code}, {response.headers.get('content-type', 'no content-type')})"
+    )
+
+
+# Identify this client by name. httpx otherwise sends `python-httpx/<version>`,
+# which bot protection answers with an HTML challenge page instead of the API --
+# the failure that cost an afternoon on mcp-wordpress (RT #1596). GitHub also
+# asks API clients to send one. The version comes from installed package
+# metadata so it cannot drift from pyproject.toml.
+USER_AGENT = (
+    f"mcp-github-crunchtools/{version('mcp-github-crunchtools')} "
+    "(+https://github.com/crunchtools/mcp-github)"
+)
 # A job log is streamed and only its tail is kept, so it may be larger than a
 # buffered API response; past this the download is abandoned.
 MAX_DOWNLOAD_SIZE = 2 * MAX_RESPONSE_SIZE
@@ -127,6 +185,7 @@ class GitHubClient:
             headers = {
                 "Accept": DEFAULT_ACCEPT,
                 "X-GitHub-Api-Version": GITHUB_API_VERSION,
+                "User-Agent": USER_AGENT,
             }
             if self._config.token:
                 headers["Authorization"] = f"Bearer {self._config.token}"
@@ -177,11 +236,17 @@ class GitHubClient:
         params: dict[str, Any] | None = None,
         json_data: dict[str, Any] | None = None,
         accept: str | None = None,
-    ) -> httpx.Response:
-        """Send one authenticated API request and return the raw response.
+    ) -> tuple[httpx.Response, bytes]:
+        """Send one authenticated API request and return it with its bounded body.
 
         Transport failures and oversized responses are raised as
         GitHubApiError; the HTTP status is left for the caller to judge.
+
+        Streamed rather than read whole, because the cap has to hold while the
+        body arrives. The `content-length` check this replaces was the only
+        limit on the JSON path, and GitHub does not always send that header --
+        the job-log download below has always read in bounded pieces, which is
+        what made the gap easy to miss.
         """
         # Resolved before anything else, so a call with no usable token makes
         # no request at all.
@@ -194,23 +259,49 @@ class GitHubClient:
         logger.debug("API request: %s %s", method, path)
 
         try:
-            response = await client.request(
+            request = client.build_request(
                 method=method,
                 url=path,
                 params=params,
                 json=json_data,
                 headers=headers or None,
             )
+            response = await client.send(request, stream=True)
+            try:
+                body = await self._read_capped(response)
+            finally:
+                await response.aclose()
         except httpx.TimeoutException as e:
             raise GitHubApiError(0, f"Request timeout: {e}") from e
         except httpx.RequestError as e:
             raise GitHubApiError(0, f"Request failed: {e}") from e
 
-        content_length = response.headers.get("content-length")
-        if content_length and int(content_length) > MAX_RESPONSE_SIZE:
-            raise GitHubApiError(0, "Response too large")
+        return response, body
 
-        return response
+    @staticmethod
+    async def _read_capped(response: httpx.Response) -> bytes:
+        """Read the body, aborting as soon as it would pass MAX_RESPONSE_SIZE.
+
+        One buffer, measured before the copy: `aiter_bytes()` promises nothing
+        about chunk size -- one chunk can be the whole body -- so appending
+        first would copy in exactly the response being refused.
+        """
+        declared = response.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_RESPONSE_SIZE:
+            raise GitHubApiError(
+                response.status_code,
+                f"{_where(response)} declared {declared} bytes, over the "
+                f"{MAX_RESPONSE_SIZE} byte limit",
+            )
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            if len(body) + len(chunk) > MAX_RESPONSE_SIZE:
+                raise GitHubApiError(
+                    response.status_code,
+                    f"{_where(response)} sent over the {MAX_RESPONSE_SIZE} byte limit",
+                )
+            body += chunk
+        return bytes(body)
 
     async def _request(
         self,
@@ -242,22 +333,25 @@ class GitHubClient:
             PermissionDeniedError: On 401 authorization failures
             NotFoundError: When the resource does not exist
         """
-        response = await self._send(method, path, params, json_data, accept)
+        response, body = await self._send(method, path, params, json_data, accept)
 
         if not response.is_success:
-            self._handle_error_response(response)
+            self._handle_error_response(response, body)
 
         if response.status_code == 204:
             return {"status": "deleted"}
 
         content_type = response.headers.get("content-type", "")
         if "application/json" not in content_type:
-            return {"content": response.text}
+            return {"content": body.decode("utf-8", errors="replace")}
 
         try:
-            parsed = response.json()
+            parsed = json.loads(body)
         except ValueError as e:
-            raise GitHubApiError(response.status_code, f"Invalid JSON response: {e}") from e
+            raise GitHubApiError(
+                response.status_code,
+                f"{_where(response)} is not JSON ({e}): {_body_snippet(body)}",
+            ) from e
 
         if isinstance(parsed, list):
             return self._wrap_list_response(parsed, response)
@@ -291,7 +385,7 @@ class GitHubClient:
 
         return wrapped
 
-    def _handle_error_response(self, response: httpx.Response) -> None:
+    def _handle_error_response(self, response: httpx.Response, body: bytes) -> None:
         """Handle error responses from the API.
 
         GitHub signals primary rate limiting with HTTP 403 (not 429) plus
@@ -299,23 +393,28 @@ class GitHubClient:
 
         Args:
             response: HTTP response
+            body: its bounded body, already read
 
         Raises:
             Various UserError subclasses based on error type
         """
         status_code = response.status_code
 
-        error_msg: str = "Unknown error"
+        error_msg: str = ""
         try:
-            error_body = response.json()
+            error_body = json.loads(body)
             if isinstance(error_body, dict):
                 raw_msg = error_body.get("message", error_body.get("error"))
                 if isinstance(raw_msg, (dict, str, int, float)):
-                    error_msg = str(raw_msg)
+                    error_msg = str(raw_msg)[: BODY_SNIPPET_CHARS * 4]
             else:
-                error_msg = str(error_body)
+                error_msg = str(error_body)[: BODY_SNIPPET_CHARS * 4]
         except ValueError:
-            error_msg = response.text[:200] if response.text else "Unknown error"
+            error_msg = ""
+        # A body that is not GitHub's JSON error shape is quoted with the
+        # request it answered: that is what tells an Enterprise login page or a
+        # proxy apart from the API refusing something.
+        error_msg = error_msg or f"{_where(response)} returned {_body_snippet(body)}"
 
         rate_remaining = response.headers.get("x-ratelimit-remaining")
 
@@ -387,10 +486,10 @@ class GitHubClient:
             RateLimitError, PermissionDeniedError, NotFoundError: As for any
                 API request, from the first hop
         """
-        response = await self._send("GET", path)
+        response, body = await self._send("GET", path)
         if not response.is_redirect:
             if not response.is_success:
-                self._handle_error_response(response)
+                self._handle_error_response(response, body)
             raise GitHubApiError(response.status_code, "Expected a redirect to a download")
 
         location = response.headers.get("location", "")

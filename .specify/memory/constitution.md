@@ -2,9 +2,9 @@
 
 > **Version:** 1.3.0
 > **Ratified:** 2026-06-14
-> **Amended:** 2026-10-14
+> **Amended:** 2026-11-09
 > **Status:** Active
-> **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.31.0
+> **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.36.0
 > **Profile:** MCP Server
 
 This file holds what is specific to mcp-github. The fleet rules and the MCP
@@ -35,7 +35,8 @@ restated here.
   truncates long identifiers.
 - **API:** `Authorization: Bearer` header, never the URL; the
   `X-GitHub-Api-Version` header is pinned to `2022-11-28`; path parameters
-  are URL-encoded; requests time out after 30s; responses are capped at 10MB.
+  are URL-encoded; requests time out after 30s; responses are capped at 10MB
+  while reading, not from the `content-length` header GitHub need not send.
 - **Redirects:** the API client follows none. A job log, which GitHub serves
   as a redirect to a pre-signed storage URL, is fetched by a separate client
   that has no token, over HTTPS to a named host only, streamed, with only its
