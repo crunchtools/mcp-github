@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-11-10
+
+### Fixed
+
+- The container installed its dependencies by resolving `pyproject.toml`
+  fresh instead of from the committed, Dependabot-maintained `uv.lock`.
+  `pip install .` reads only the floor pins, so the image could ship whatever
+  had been released that morning -- a dependency set no test had ever run
+  against. That is how `google-genai` 3.0 reached `mcp-gemini`'s production
+  with CI green (RT #1564); this repo had the same gap. The builder now
+  installs from a `uv export` of the lock with `--no-deps`, so the image
+  carries exactly what CI tested.
+
 ## [2.1.0] - 2026-11-09
 
 ### Fixed
