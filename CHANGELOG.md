@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `get_pull_request_checks_tool` no longer reports `ready_to_merge: true` when it
+  finds no checks (unreadable check-runs, or right after a push). It now fails
+  closed with a `reason`; pass `allow_no_required_checks` to opt out.
+
 ## [2.1.2] - 2026-11-17
 
 ### Security

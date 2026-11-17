@@ -211,6 +211,7 @@ async def get_pull_request_checks(
     owner: str | None,
     repo: str,
     pull_number: int,
+    allow_no_required_checks: bool = False,
 ) -> dict[str, Any]:
     """Get a CI verdict for a pull request that distinguishes skip from fail.
 
@@ -224,12 +225,15 @@ async def get_pull_request_checks(
     is why this tool classifies each check explicitly instead of trusting that
     aggregate. Use the ``ready_to_merge`` boolean as the signal for whether the
     PR is clear to merge: it is True only when there are no failing and no
-    pending checks and the PR is not known-unmergeable.
+    pending checks and the PR is not known-unmergeable. Finding no checks at
+    all fails closed (``ready_to_merge`` False, with a ``reason``) unless
+    ``allow_no_required_checks`` is set.
 
     Args:
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
         repo: Repository name
         pull_number: Pull request number
+        allow_no_required_checks: Treat a PR with no checks as ready
 
     Returns:
         A verdict with the head SHA, mergeability, per-bucket check lists, a
@@ -258,7 +262,13 @@ async def get_pull_request_checks(
     passed = buckets["passed"]
 
     mergeable = pr.get("mergeable")
-    ready_to_merge = not failing and not pending and mergeable is not False
+    no_checks = not (failing or pending or skipped or passed)
+    ready_to_merge = (
+        not failing
+        and not pending
+        and mergeable is not False
+        and not (no_checks and not allow_no_required_checks)
+    )
 
     verdict: dict[str, Any] = {
         "pull_number": pull_number,
@@ -280,6 +290,12 @@ async def get_pull_request_checks(
     }
     if source == SOURCE_ACTIONS:
         verdict["note"] = ACTIONS_SOURCE_NOTE
+    if no_checks and not allow_no_required_checks:
+        verdict["reason"] = (
+            "No checks were found for the head commit. The token may be unable to "
+            "read check-runs, or checks may not have started yet after a push. "
+            "Pass allow_no_required_checks=True if none are expected."
+        )
     if truncated:
         # A cut list cannot clear the PR: an unread page may hold a failure.
         verdict["ready_to_merge"] = False

@@ -298,6 +298,7 @@ async def get_pull_request_checks_tool(
     repo: str,
     pull_number: Annotated[int, Field(ge=1)],
     owner: str | None = None,
+    allow_no_required_checks: bool = False,
 ) -> dict[str, Any]:
     """Get a CI verdict for a PR that distinguishes skipped from failed.
 
@@ -313,12 +314,19 @@ async def get_pull_request_checks_tool(
         repo: Repository name
         pull_number: Pull request number
         owner: Repository owner (defaults to GITHUB_DEFAULT_ORG if unset)
+        allow_no_required_checks: Treat a PR with no checks as ready; by
+            default zero checks found gives ready_to_merge False with a reason
 
     Returns:
         A verdict with head SHA, mergeability, ready_to_merge, a summary
         count, and per-bucket check lists
     """
-    return await get_pull_request_checks(owner=owner, repo=repo, pull_number=pull_number)
+    return await get_pull_request_checks(
+        owner=owner,
+        repo=repo,
+        pull_number=pull_number,
+        allow_no_required_checks=allow_no_required_checks,
+    )
 
 
 @mcp.tool()
