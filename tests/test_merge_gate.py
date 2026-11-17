@@ -851,6 +851,28 @@ class TestFineGrainedToken:
         assert allowed["ready_to_merge"] is True
         assert "reason" not in allowed
 
+    async def test_checks_tool_fails_closed_when_actions_finds_nothing(self) -> None:
+        from mcp_github_crunchtools.tools import get_pull_request_checks
+
+        with _patch_transport(MockGitHub(fail={"check_runs": DENIED})):
+            verdict = await get_pull_request_checks(owner="o", repo="r", pull_number=12)
+
+        assert verdict["checks_source"] == "actions"
+        assert verdict["ready_to_merge"] is False
+        assert "No checks were found" in verdict["reason"]
+
+    @pytest.mark.parametrize("failure", [(500, "boom"), (404, "Not Found")])
+    async def test_checks_tool_check_runs_error_gives_no_verdict(
+        self, failure: tuple[int, str]
+    ) -> None:
+        from mcp_github_crunchtools.errors import UserError
+        from mcp_github_crunchtools.tools import get_pull_request_checks
+
+        github = MockGitHub(fail={"check_runs": failure}, jobs={7: [job("test")]})
+        with _patch_transport(github), pytest.raises(UserError):
+            await get_pull_request_checks(owner="o", repo="r", pull_number=12)
+        assert not any("/actions/" in path for path in github.paths())
+
     async def test_no_required_checks_reports_no_source(self) -> None:
         github = MockGitHub()
 
