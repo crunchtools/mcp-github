@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-11-17
+
 ### Fixed
 
 - `get_pull_request_checks_tool` no longer reports `ready_to_merge: true` when it
