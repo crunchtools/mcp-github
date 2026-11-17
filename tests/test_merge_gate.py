@@ -836,6 +836,21 @@ class TestFineGrainedToken:
         assert "/repos/o/r/actions/runs" in verdict["truncated"]
         assert verdict["ready_to_merge"] is False
 
+    async def test_checks_tool_fails_closed_with_no_checks(self) -> None:
+        from mcp_github_crunchtools.tools import get_pull_request_checks
+
+        with _patch_transport(MockGitHub(check_runs=[])):
+            verdict = await get_pull_request_checks(owner="o", repo="r", pull_number=12)
+        assert verdict["ready_to_merge"] is False
+        assert "No checks were found" in verdict["reason"]
+
+        with _patch_transport(MockGitHub(check_runs=[])):
+            allowed = await get_pull_request_checks(
+                owner="o", repo="r", pull_number=12, allow_no_required_checks=True
+            )
+        assert allowed["ready_to_merge"] is True
+        assert "reason" not in allowed
+
     async def test_no_required_checks_reports_no_source(self) -> None:
         github = MockGitHub()
 
