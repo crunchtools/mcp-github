@@ -87,6 +87,9 @@ class TestListRulesets:
             {"org": ""},
             {"org": "bad org"},
             {"org": "o", "repo": "../x"},
+            {"org": "o", "repo": ".."},
+            {"org": "o", "repo": "."},
+            {"org": ".."},
             {"org": "o", "targets": "bogus"},
             {"org": "o", "targets": ""},
             {"org": "o", "targets": "branch,"},
@@ -127,6 +130,9 @@ class TestGetRuleset:
             {"org": "o", "ruleset_id": -3},
             {"org": "", "ruleset_id": 1},
             {"org": "o", "ruleset_id": 1, "repo": "a/b"},
+            {"org": "o", "ruleset_id": 1, "repo": ".."},
+            {"org": "o", "ruleset_id": 1, "repo": "."},
+            {"org": "..", "ruleset_id": 1},
         ],
     )
     async def test_bad_input(self, arguments: dict[str, Any]) -> None:

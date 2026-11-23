@@ -78,6 +78,10 @@ def validate_name(value: str, field: str) -> str:
 
     value = value.strip()
 
+    # A bare dot segment passes the pattern, and httpx removes it from the URL path.
+    if value in (".", ".."):
+        raise ValueError(f"{field} is not a valid name")
+
     if len(value) > MAX_NAME_LENGTH:
         raise ValueError(f"{field} is too long")
 

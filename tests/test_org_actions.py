@@ -193,6 +193,8 @@ class TestBadInput:
             {"org": None},
             {"org": ""},
             {"org": "a/b"},
+            {"org": ".."},
+            {"org": "."},
             {"workflow_path_include": ["../x.yml"]},
             {"workflow_path_include": ["a b.yml"]},
             {"repository_name_include": []},
@@ -214,6 +216,9 @@ class TestBadInput:
         [
             (get_org_fork_pr_approval, (None,)),
             (get_org_fork_pr_approval, ("a/b",)),
+            (get_org_fork_pr_approval, ("..",)),
+            (set_org_fork_pr_approval, ("..", "first_time_contributors")),
+            (get_org_actions_policy, (".", 1)),
             (set_org_fork_pr_approval, ("a/b", "first_time_contributors")),
             (list_org_actions_policies, ("a/b",)),
             (list_org_actions_policies, ("crunchtools", 0)),

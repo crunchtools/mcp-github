@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- `validate_name` refuses a bare `.` or `..` owner, repository or org. Each matched
+  the safe-name pattern, and httpx removes dot segments when it builds the URL, so
+  `repo=".."` turned `/repos/{org}/{repo}/...` into a path outside the pinned org.
+
 ### Added
 - Ten organization-settings tools for the fleet CI cutover (crunchtools/trentina#917):
   - `get_org_fork_pr_approval_tool` and `set_org_fork_pr_approval_tool` read and set
