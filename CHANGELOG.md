@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-23
+
 ### Security
 - `validate_name` refuses a bare `.` or `..` owner, repository or org. Each matched
   the safe-name pattern, and httpx removes dot segments when it builds the URL, so
