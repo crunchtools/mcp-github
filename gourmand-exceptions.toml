@@ -46,3 +46,9 @@ path = ".pre-commit-config.yaml"
 pattern = "ruff-check"
 justification = "ruff runs inside the sdlc-commit hook from python-sdlc (constitution XII v1.30.0), configured by [tool.ruff] in pyproject.toml; Gourmand looks for a literal ruff hook id"
 classification = "by_design"
+
+[[exceptions]]
+check = "DC004-dead_structs"
+path = "src/mcp_github_crunchtools/tools/rulesets.py"
+justification = "The rule and parameter models are members of the discriminated union `Rule`. Pydantic builds them from tool arguments: FastMCP validates create_ruleset_tool/update_ruleset_tool's `rules: list[Rule]`, and _validate_rules runs them through TypeAdapter(list[Rule]). Nothing calls a constructor by name, so DC004 sees no construction site. tests/test_tools.py::TestOrgSettingsTools::test_create_ruleset_through_the_server exercises the path."
+classification = "by_design"

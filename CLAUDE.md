@@ -1,6 +1,6 @@
 # Claude Code Instructions
 
-Secure MCP server for the GitHub REST API with 26 tools across issues, pull requests, Actions, releases, files, and search. Works with github.com and GitHub Enterprise Server.
+Secure MCP server for the GitHub REST API with 36 tools across issues, pull requests, Actions, releases, organization settings, files, and search. Works with github.com and GitHub Enterprise Server.
 
 ## Quick Start
 
@@ -36,7 +36,8 @@ claude mcp add mcp-github-crunchtools \
    Actions. Add write only for the write tools you use: Issues and Pull
    requests for commenting, opening and updating; Contents for
    `merge_pull_request_tool` and `create_release_tool`; Actions for
-   `trigger_workflow_tool` and `rerun_*`. The per-tool table is in README.md
+   `trigger_workflow_tool` and `rerun_*`; organization Administration for
+   the organization-settings tools. The per-tool table is in README.md
    under "Token permissions".
 4. Copy the token immediately (shown only once)
 
@@ -51,7 +52,7 @@ claude mcp add mcp-github-crunchtools \
 | `SSL_CERT_FILE` | No | — | Custom CA bundle for self-hosted instances |
 | `GITHUB_SSL_VERIFY` | No | `true` | Set `false` to disable SSL verification |
 
-## Available Tools (26)
+## Available Tools (36)
 
 | Category | Tools |
 |----------|-------|
@@ -61,6 +62,7 @@ claude mcp add mcp-github-crunchtools \
 | Search | `search_code_tool`, `search_issues_tool` |
 | Actions | `list_workflow_runs_tool`, `get_workflow_run_tool`, `get_failed_job_logs_tool`, `trigger_workflow_tool`, `rerun_workflow_run_tool`, `rerun_failed_jobs_tool` |
 | Releases | `create_release_tool` |
+| Organization settings | `get_org_fork_pr_approval_tool`, `set_org_fork_pr_approval_tool`, `list_org_actions_policies_tool`, `get_org_actions_policy_tool`, `create_org_actions_policy_tool`, `update_org_actions_policy_tool`, `list_rulesets_tool`, `get_ruleset_tool`, `create_ruleset_tool`, `update_ruleset_tool` |
 
 Write tools (`create_*`, `update_*`, `merge_pull_request_tool`,
 `reply_to_review_comment_tool`, `trigger_workflow_tool`, `rerun_*`)
@@ -68,6 +70,10 @@ are scoped per-profile by the gateway. `trigger_workflow_tool` dispatches a
 fresh run (via `workflow_dispatch`) and is the way to *force* a build —
 `rerun_*` only re-run an existing run and GitHub rejects runs older than 30
 days.
+
+The organization-settings tools take a required `org` and never fall back to
+`GITHUB_DEFAULT_ORG`: a gateway guard on an argument passes when the argument
+is absent. Keep `org` required on any tool added there.
 
 `merge_pull_request_tool` enforces the base branch's required checks itself
 (rulesets and classic protection, fail closed) before it merges, pinned to

@@ -14,10 +14,15 @@ SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$")
 # A full commit id: 40 hex digits (SHA-1) or 64 (SHA-256 repositories).
 COMMIT_SHA_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+# A ruleset or Actions policy pattern: a ref, repository name or workflow path glob.
+SETTINGS_PATTERN = re.compile(r"^[A-Za-z0-9._/*?\[\]~-]+$")
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 ISSUE_STATES = frozenset({"open", "closed", "all"})
 PR_STATES = frozenset({"open", "closed", "all"})
 MERGE_METHODS = frozenset({"merge", "squash", "rebase"})
+ENFORCEMENTS = ("disabled", "active", "evaluate")
+ALL_PATTERN = "~ALL"
 
 MAX_NAME_LENGTH = 100
 MAX_PATH_LENGTH = 1000
@@ -28,6 +33,8 @@ MAX_TITLE_LENGTH = 256
 MAX_BODY_LENGTH = 65536
 MAX_REF_LENGTH = 255
 MAX_WORKFLOW_INPUTS = 32
+MAX_PATTERN_LENGTH = 255
+MAX_PATTERNS = 100
 
 
 def resolve_owner(owner: str | None) -> str:
@@ -194,6 +201,71 @@ def validate_commit_sha(value: str | None, field: str = "sha") -> str | None:
     if not COMMIT_SHA_PATTERN.match(value):
         raise ValueError(f"{field} must be a full 40 or 64 character commit SHA")
     return value
+
+
+def validate_text(value: str, field: str, max_length: int = MAX_NAME_LENGTH) -> str:
+    """Validate a short free-text field: 1 to max_length characters, no control characters.
+
+    Args:
+        value: The value to validate, as given (not stripped).
+        field: Field name for error messages.
+        max_length: Longest value accepted.
+
+    Returns:
+        The validated value.
+
+    Raises:
+        ValueError: If the value is empty, too long, or holds a control character.
+    """
+    if not isinstance(value, str) or not value or len(value) > max_length:
+        raise ValueError(f"{field} must be 1 to {max_length} characters")
+    if CONTROL_CHARS.search(value):
+        raise ValueError(f"{field} must not contain control characters")
+    return value
+
+
+def validate_choice(value: str, allowed: tuple[str, ...], field: str) -> str:
+    """Validate that a value is one of a fixed set."""
+    if value not in allowed:
+        raise ValueError(f"{field} must be one of: {', '.join(allowed)}")
+    return value
+
+
+def validate_patterns(
+    values: list[str] | None, field: str, specials: frozenset[str] = frozenset()
+) -> list[str] | None:
+    """Validate a list of ref, repository name or workflow path patterns.
+
+    A ``~`` value (``~ALL``, ``~DEFAULT_BRANCH``) is accepted only when listed in
+    ``specials``, and ``~ALL`` only as the list's sole entry.
+
+    Args:
+        values: The patterns, or None when not given.
+        field: Field name for error messages.
+        specials: The ``~`` values this field accepts.
+
+    Returns:
+        The patterns, or None when none were given.
+
+    Raises:
+        ValueError: If the list is too long or an entry is malformed.
+    """
+    if values is None:
+        return None
+    if not isinstance(values, list) or len(values) > MAX_PATTERNS:
+        raise ValueError(f"{field} must be a list of at most {MAX_PATTERNS} patterns")
+    for value in values:
+        validate_text(value, f"{field} entry", MAX_PATTERN_LENGTH)
+        if ".." in value or not SETTINGS_PATTERN.match(value):
+            raise ValueError(
+                f"{field} entries may contain only letters, digits and . _ - / * ? [ ] ~ (no '..')"
+            )
+        if value.startswith("~") and value not in specials:
+            allowed = ", ".join(sorted(specials)) or "none"
+            raise ValueError(f"{field} entry {value!r} is not allowed (special values: {allowed})")
+    if ALL_PATTERN in values and len(values) > 1:
+        raise ValueError(f"{ALL_PATTERN} must be the only entry in {field}")
+    return list(values)
 
 
 def validate_workflow_inputs(inputs: dict[str, object]) -> dict[str, object]:

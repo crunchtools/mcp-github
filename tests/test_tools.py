@@ -38,10 +38,10 @@ class TestToolRegistration:
             assert callable(func), f"{name} is not callable"
 
     def test_tool_count(self) -> None:
-        """Server should export exactly 26 tools."""
+        """Server should export exactly 36 tools."""
         from mcp_github_crunchtools.tools import __all__
 
-        assert len(__all__) == 26
+        assert len(__all__) == 36
 
 
 READ_ONLY = frozenset(
@@ -61,6 +61,11 @@ READ_ONLY = frozenset(
         "list_workflow_runs_tool",
         "get_workflow_run_tool",
         "get_failed_job_logs_tool",
+        "get_org_fork_pr_approval_tool",
+        "list_org_actions_policies_tool",
+        "get_org_actions_policy_tool",
+        "list_rulesets_tool",
+        "get_ruleset_tool",
     }
 )
 WRITES = frozenset(
@@ -76,6 +81,11 @@ WRITES = frozenset(
         "rerun_workflow_run_tool",
         "rerun_failed_jobs_tool",
         "create_release_tool",
+        "set_org_fork_pr_approval_tool",
+        "create_org_actions_policy_tool",
+        "update_org_actions_policy_tool",
+        "create_ruleset_tool",
+        "update_ruleset_tool",
     }
 )
 
@@ -96,6 +106,11 @@ READ_ONLY_CALLS: dict[str, dict[str, object]] = {
     "list_pull_request_comments_tool": {"owner": "o", "repo": "r", "pull_number": 1},
     "get_workflow_run_tool": {"owner": "o", "repo": "r", "run_id": 1},
     "get_failed_job_logs_tool": {"owner": "o", "repo": "r", "run_id": 1},
+    "get_org_fork_pr_approval_tool": {"org": "o"},
+    "list_org_actions_policies_tool": {"org": "o"},
+    "get_org_actions_policy_tool": {"org": "o", "policy_id": 1},
+    "list_rulesets_tool": {"org": "o", "repo": "r"},
+    "get_ruleset_tool": {"org": "o", "ruleset_id": 1},
 }
 
 # Methods a read-only tool may send. Every read here is a plain REST GET, so
@@ -2201,3 +2216,111 @@ class TestClientErrorHandling:
 
         with _patch_client(resp), pytest.raises(RateLimitError):
             await get_issue(owner="o", repo="r", issue_number=1)
+
+
+ORG_SETTINGS_TOOLS = frozenset(
+    {
+        "get_org_fork_pr_approval_tool",
+        "set_org_fork_pr_approval_tool",
+        "list_org_actions_policies_tool",
+        "get_org_actions_policy_tool",
+        "create_org_actions_policy_tool",
+        "update_org_actions_policy_tool",
+        "list_rulesets_tool",
+        "get_ruleset_tool",
+        "create_ruleset_tool",
+        "update_ruleset_tool",
+    }
+)
+
+
+class TestOrgSettingsTools:
+    """The organization-settings tools pin `org` and publish typed arguments."""
+
+    @pytest.mark.asyncio
+    async def test_org_is_required_everywhere(self) -> None:
+        """A gateway guard passes an absent argument, so `org` may not default."""
+        from mcp_github_crunchtools.server import mcp
+
+        tools = {tool.name: tool for tool in await mcp.list_tools()}
+        for name in ORG_SETTINGS_TOOLS:
+            assert "org" in tools[name].parameters["required"], name
+            assert "owner" not in tools[name].parameters["properties"], name
+
+    @pytest.mark.asyncio
+    async def test_rules_and_actors_are_typed_not_free_form(self) -> None:
+        from mcp_github_crunchtools.server import mcp
+
+        tools = {tool.name: tool for tool in await mcp.list_tools()}
+        schema = str(tools["create_ruleset_tool"].parameters)
+        assert "required_status_checks" in schema
+        assert "OrganizationAdmin" in schema
+        schema = str(tools["create_org_actions_policy_tool"].parameters)
+        assert "IntegrationInstallation" in schema
+
+    @pytest.mark.asyncio
+    async def test_create_ruleset_through_the_server(self) -> None:
+        from mcp_github_crunchtools.server import mcp
+
+        resp = _mock_response(status_code=201, json_data={"id": 9, "name": "release"})
+        with _patch_client(resp) as client_cls:
+            await mcp.call_tool(
+                "create_ruleset_tool",
+                {
+                    "org": "crunchtools",
+                    "name": "ashigaru-release",
+                    "enforcement": "active",
+                    "ref_name_include": ["refs/heads/ashigaru/release-*"],
+                    "repository_name_include": ["~ALL"],
+                    "bypass_actors": [{"actor_id": 42, "actor_type": "Integration"}],
+                    "rules": [
+                        {"type": "creation"},
+                        {"type": "update"},
+                        {
+                            "type": "required_status_checks",
+                            "parameters": {"required_status_checks": [{"context": "ci"}]},
+                        },
+                    ],
+                },
+            )
+        call = client_cls.return_value.build_request.call_args
+        assert call.kwargs["method"] == "POST"
+        assert call.kwargs["url"] == "/orgs/crunchtools/rulesets"
+        assert call.kwargs["json"]["bypass_actors"] == [
+            {"actor_id": 42, "actor_type": "Integration", "bypass_mode": "always"}
+        ]
+        assert call.kwargs["json"]["rules"] == [
+            {"type": "creation"},
+            {"type": "update", "parameters": {"update_allows_fetch_and_merge": False}},
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [{"context": "ci"}],
+                    "strict_required_status_checks_policy": False,
+                    "do_not_enforce_on_create": False,
+                },
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_rule_type_never_reaches_github(self) -> None:
+        from fastmcp.exceptions import ValidationError
+
+        from mcp_github_crunchtools.server import mcp
+
+        with (
+            _patch_client(_mock_response(json_data={})) as client_cls,
+            pytest.raises(ValidationError, match="does not match any of the expected tags"),
+        ):
+            await mcp.call_tool(
+                "create_ruleset_tool",
+                {
+                    "org": "crunchtools",
+                    "name": "x",
+                    "enforcement": "active",
+                    "ref_name_include": ["~ALL"],
+                    "repository_name_include": ["~ALL"],
+                    "rules": [{"type": "anything", "parameters": {"raw": True}}],
+                },
+            )
+        client_cls.return_value.build_request.assert_not_called()
