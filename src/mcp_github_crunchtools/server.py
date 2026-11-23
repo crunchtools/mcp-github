@@ -4,7 +4,7 @@ This module creates and configures the MCP server with all tools.
 """
 
 import logging
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
 from pydantic import Field
@@ -12,20 +12,27 @@ from pydantic import Field
 from .tools import (
     create_issue,
     create_issue_comment,
+    create_org_actions_policy,
     create_pull_request,
     create_release,
+    create_ruleset,
     get_failed_job_logs,
     get_file_content,
     get_issue,
+    get_org_actions_policy,
+    get_org_fork_pr_approval,
     get_pull_request,
     get_pull_request_checks,
     get_pull_request_diff,
+    get_ruleset,
     get_workflow_run,
     list_issue_comments,
     list_issues,
+    list_org_actions_policies,
     list_pull_request_comments,
     list_pull_requests,
     list_repo_tree,
+    list_rulesets,
     list_workflow_runs,
     merge_pull_request,
     reply_to_review_comment,
@@ -33,10 +40,15 @@ from .tools import (
     rerun_workflow_run,
     search_code,
     search_issues,
+    set_org_fork_pr_approval,
     trigger_workflow,
     update_issue,
+    update_org_actions_policy,
     update_pull_request,
+    update_ruleset,
 )
+from .tools.org_actions import AllowedActor
+from .tools.rulesets import BypassActor, Rule
 
 logger = logging.getLogger(__name__)
 
@@ -808,3 +820,339 @@ async def create_release_tool(
         prerelease=prerelease,
         generate_release_notes=generate_release_notes,
     )
+
+
+# Organization settings. Each takes a required ``org`` with no
+# GITHUB_DEFAULT_ORG fallback: a gateway guard on ``org`` passes an absent
+# argument, so leaving it out must not reach a default organization.
+
+ForkPrApprovalPolicy = Literal[
+    "first_time_contributors_new_to_github", "first_time_contributors", "all_external_contributors"
+]
+Enforcement = Literal["disabled", "active", "evaluate"]
+RulesetTarget = Literal["branch", "tag", "push", "repository"]
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_org_fork_pr_approval_tool(org: str) -> dict[str, Any]:
+    """Get which outside contributors need approval before fork PRs run workflows.
+
+    Args:
+        org: Organization name
+
+    Returns:
+        The organization and its approval_policy
+    """
+    return await get_org_fork_pr_approval(org=org)
+
+
+@mcp.tool()
+async def set_org_fork_pr_approval_tool(
+    org: str, approval_policy: ForkPrApprovalPolicy
+) -> dict[str, Any]:
+    """Set which outside contributors need approval before fork PRs run workflows.
+
+    Args:
+        org: Organization name
+        approval_policy: first_time_contributors_new_to_github,
+            first_time_contributors, or all_external_contributors (every
+            outside contributor needs approval)
+
+    Returns:
+        The organization and the approval_policy read back after the change
+    """
+    return await set_org_fork_pr_approval(org=org, approval_policy=approval_policy)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_org_actions_policies_tool(
+    org: str, per_page: int = 30, page: int = 1
+) -> dict[str, Any]:
+    """List an organization's Actions policies (allowed events and actors).
+
+    Args:
+        org: Organization name
+        per_page: Results per page, max 100 (default: 30)
+        page: Page number (default: 1)
+
+    Returns:
+        Policies with their conditions and rules, and pagination info
+    """
+    return await list_org_actions_policies(org=org, page=page, per_page=per_page)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_org_actions_policy_tool(
+    org: str, policy_id: Annotated[int, Field(ge=1)]
+) -> dict[str, Any]:
+    """Get one of an organization's Actions policies.
+
+    Args:
+        org: Organization name
+        policy_id: Policy ID
+
+    Returns:
+        The policy's name, enforcement, conditions and rules
+    """
+    return await get_org_actions_policy(org=org, policy_id=policy_id)
+
+
+@mcp.tool()
+async def create_org_actions_policy_tool(
+    org: str,
+    name: str,
+    enforcement: Enforcement,
+    repository_name_include: list[str],
+    repository_name_exclude: list[str] | None = None,
+    repository_name_protected: bool | None = None,
+    workflow_path_include: list[str] | None = None,
+    workflow_path_exclude: list[str] | None = None,
+    allowed_events: list[str] | None = None,
+    allowed_actors: list[AllowedActor] | None = None,
+) -> dict[str, Any]:
+    """Create an organization Actions policy.
+
+    GitHub blocks pull_request_target in public repositories by default
+    unless an Actions event policy allows it; such a policy is made here with
+    allowed_events ["pull_request_target", ...] and workflow_path_include
+    naming the workflow files it covers.
+
+    Args:
+        org: Organization name
+        name: Policy name
+        enforcement: disabled, active or evaluate (evaluate is Enterprise only)
+        repository_name_include: Repository name patterns; ["~ALL"] for all
+        repository_name_exclude: Repository name patterns to skip
+        repository_name_protected: Also match on rename protection
+        workflow_path_include: Workflow file paths or globs, e.g.
+            [".github/workflows/ci.yml"]; omitted means every workflow
+        workflow_path_exclude: Workflow file paths or globs to skip
+        allowed_events: Events that may trigger the targeted workflows
+            (GitHub event names such as pull_request_target, push)
+        allowed_actors: Actors ({id, type}) that may trigger them
+
+    Returns:
+        The created policy
+    """
+    return await create_org_actions_policy(
+        org=org,
+        name=name,
+        enforcement=enforcement,
+        repository_name_include=repository_name_include,
+        repository_name_exclude=repository_name_exclude,
+        repository_name_protected=repository_name_protected,
+        workflow_path_include=workflow_path_include,
+        workflow_path_exclude=workflow_path_exclude,
+        allowed_events=allowed_events,
+        allowed_actors=_dump(allowed_actors),
+    )
+
+
+@mcp.tool()
+async def update_org_actions_policy_tool(
+    org: str,
+    policy_id: Annotated[int, Field(ge=1)],
+    name: str | None = None,
+    enforcement: Enforcement | None = None,
+    repository_name_include: list[str] | None = None,
+    repository_name_exclude: list[str] | None = None,
+    repository_name_protected: bool | None = None,
+    workflow_path_include: list[str] | None = None,
+    workflow_path_exclude: list[str] | None = None,
+    allowed_events: list[str] | None = None,
+    allowed_actors: list[AllowedActor] | None = None,
+) -> dict[str, Any]:
+    """Change an organization Actions policy; only the fields given are sent.
+
+    Giving allowed_events or allowed_actors REPLACES the policy's stored
+    rules: pass every rule to keep. Omitted workflow paths keep the stored
+    workflow targeting.
+
+    Args:
+        org: Organization name
+        policy_id: Policy ID
+        name: New policy name
+        enforcement: disabled, active or evaluate
+        repository_name_include: Repository name patterns (required with
+            any other repository_name field)
+        repository_name_exclude: Repository name patterns to skip
+        repository_name_protected: Also match on rename protection
+        workflow_path_include: Workflow file paths or globs
+        workflow_path_exclude: Workflow file paths or globs to skip
+        allowed_events: Events that may trigger the targeted workflows
+        allowed_actors: Actors ({id, type}) that may trigger them
+
+    Returns:
+        The updated policy
+    """
+    return await update_org_actions_policy(
+        org=org,
+        policy_id=policy_id,
+        name=name,
+        enforcement=enforcement,
+        repository_name_include=repository_name_include,
+        repository_name_exclude=repository_name_exclude,
+        repository_name_protected=repository_name_protected,
+        workflow_path_include=workflow_path_include,
+        workflow_path_exclude=workflow_path_exclude,
+        allowed_events=allowed_events,
+        allowed_actors=_dump(allowed_actors),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_rulesets_tool(
+    org: str,
+    repo: str | None = None,
+    targets: str | None = None,
+    per_page: int = 30,
+    page: int = 1,
+) -> dict[str, Any]:
+    """List an organization's rulesets, or one repository's.
+
+    Args:
+        org: Organization name (the repository owner when repo is given)
+        repo: Repository name; omit for the organization's rulesets
+        targets: Comma-separated filter: branch, tag, push, repository
+        per_page: Results per page, max 100 (default: 30)
+        page: Page number (default: 1)
+
+    Returns:
+        Rulesets and pagination info
+    """
+    return await list_rulesets(org=org, repo=repo, targets=targets, page=page, per_page=per_page)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_ruleset_tool(
+    org: str,
+    ruleset_id: Annotated[int, Field(ge=1)],
+    repo: str | None = None,
+) -> dict[str, Any]:
+    """Get one ruleset with its conditions, rules and bypass actors.
+
+    Args:
+        org: Organization name (the repository owner when repo is given)
+        ruleset_id: Ruleset ID
+        repo: Repository name; omit for an organization ruleset
+
+    Returns:
+        The ruleset; bypass_actors only when the token may write it
+    """
+    return await get_ruleset(org=org, ruleset_id=ruleset_id, repo=repo)
+
+
+@mcp.tool()
+async def create_ruleset_tool(
+    org: str,
+    name: str,
+    enforcement: Enforcement,
+    target: RulesetTarget = "branch",
+    repo: str | None = None,
+    ref_name_include: list[str] | None = None,
+    ref_name_exclude: list[str] | None = None,
+    repository_name_include: list[str] | None = None,
+    repository_name_exclude: list[str] | None = None,
+    repository_name_protected: bool | None = None,
+    bypass_actors: list[BypassActor] | None = None,
+    rules: list[Rule] | None = None,
+) -> dict[str, Any]:
+    """Create a ruleset on an organization, or on one repository.
+
+    Args:
+        org: Organization name (the repository owner when repo is given)
+        name: Ruleset name
+        enforcement: disabled, active or evaluate (evaluate is Enterprise only)
+        target: branch, tag, push, or repository (organization only)
+        repo: Repository name; omit for an organization ruleset
+        ref_name_include: Ref patterns (~DEFAULT_BRANCH and ~ALL allowed);
+            required for branch and tag rulesets
+        ref_name_exclude: Ref patterns to skip
+        repository_name_include: Repository name patterns (~ALL allowed);
+            required for an organization ruleset, refused with repo
+        repository_name_exclude: Repository name patterns to skip
+        repository_name_protected: Also match on rename protection
+        bypass_actors: Actors that may bypass the ruleset
+        rules: Rules, each {type, parameters}
+
+    Returns:
+        The created ruleset
+    """
+    return await create_ruleset(
+        org=org,
+        name=name,
+        enforcement=enforcement,
+        target=target,
+        repo=repo,
+        ref_name_include=ref_name_include,
+        ref_name_exclude=ref_name_exclude,
+        repository_name_include=repository_name_include,
+        repository_name_exclude=repository_name_exclude,
+        repository_name_protected=repository_name_protected,
+        bypass_actors=_dump(bypass_actors),
+        rules=_dump(rules),
+    )
+
+
+@mcp.tool()
+async def update_ruleset_tool(
+    org: str,
+    ruleset_id: Annotated[int, Field(ge=1)],
+    repo: str | None = None,
+    name: str | None = None,
+    enforcement: Enforcement | None = None,
+    target: RulesetTarget | None = None,
+    ref_name_include: list[str] | None = None,
+    ref_name_exclude: list[str] | None = None,
+    repository_name_include: list[str] | None = None,
+    repository_name_exclude: list[str] | None = None,
+    repository_name_protected: bool | None = None,
+    bypass_actors: list[BypassActor] | None = None,
+    rules: list[Rule] | None = None,
+) -> dict[str, Any]:
+    """Change a ruleset; only the fields given are sent.
+
+    Given rules, bypass_actors or conditions REPLACE the stored ones: pass
+    the complete list, and both halves of the conditions (ref_name_include,
+    and repository_name_include on an organization ruleset).
+
+    Args:
+        org: Organization name (the repository owner when repo is given)
+        ruleset_id: Ruleset ID
+        repo: Repository name; omit for an organization ruleset
+        name: New ruleset name
+        enforcement: disabled, active or evaluate
+        target: branch, tag, push, or repository (organization only)
+        ref_name_include: Ref patterns
+        ref_name_exclude: Ref patterns to skip
+        repository_name_include: Repository name patterns (organization only)
+        repository_name_exclude: Repository name patterns to skip
+        repository_name_protected: Also match on rename protection
+        bypass_actors: Complete list of actors that may bypass the ruleset
+        rules: Complete list of rules, each {type, parameters}
+
+    Returns:
+        The updated ruleset
+    """
+    return await update_ruleset(
+        org=org,
+        ruleset_id=ruleset_id,
+        repo=repo,
+        name=name,
+        enforcement=enforcement,
+        target=target,
+        ref_name_include=ref_name_include,
+        ref_name_exclude=ref_name_exclude,
+        repository_name_include=repository_name_include,
+        repository_name_exclude=repository_name_exclude,
+        repository_name_protected=repository_name_protected,
+        bypass_actors=_dump(bypass_actors),
+        rules=_dump(rules),
+    )
+
+
+def _dump(items: list[Any] | None) -> list[dict[str, Any]] | None:
+    """The typed items as the plain dicts the tool functions validate again."""
+    if items is None:
+        return None
+    return [item.model_dump(mode="json", exclude_none=True) for item in items]

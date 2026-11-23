@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- `validate_name` refuses a bare `.` or `..` owner, repository or org. Each matched
+  the safe-name pattern, and httpx removes dot segments when it builds the URL, so
+  `repo=".."` turned `/repos/{org}/{repo}/...` into a path outside the pinned org.
+
+### Added
+- Ten organization-settings tools for the fleet CI cutover (crunchtools/trentina#917):
+  - `get_org_fork_pr_approval_tool` and `set_org_fork_pr_approval_tool` read and set
+    `/orgs/{org}/actions/permissions/fork-pr-contributor-approval`, for example to
+    `all_external_contributors`. The setter reads the value back.
+  - `list_org_actions_policies_tool`, `get_org_actions_policy_tool`,
+    `create_org_actions_policy_tool` and `update_org_actions_policy_tool` work on
+    `/orgs/{org}/actions/policies`. This is the Actions event policy that GitHub's
+    2026-12-02 `pull_request_target` default block honours. A policy that allows
+    `pull_request_target` for `.github/workflows/ci.yml` in every repository is one call.
+  - `list_rulesets_tool`, `get_ruleset_tool`, `create_ruleset_tool` and
+    `update_ruleset_tool` work on organization rulesets, and on a repository's when
+    `repo` is given.
+  - Rules, bypass actors and allowed actors are typed models: a rule type outside the
+    supported set is refused before any request.
+  - Every one of these tools takes a required `org` with no `GITHUB_DEFAULT_ORG`
+    fallback, so a gateway guard on `org` cannot be skipped by leaving the argument out.
+
 ### Changed
 - Gatehouse triage gets `review_result`, so a PR whose review job died before posting anything is held instead of passing.
 - Promote signs the image with the fleet cosign key (`sign: true`), because

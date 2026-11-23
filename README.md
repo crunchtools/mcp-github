@@ -34,7 +34,7 @@ The container image is built on the [Hummingbird Python base image](https://quay
 
 ## Features
 
-26 tools. Tools marked *write* change something on GitHub; the others only
+36 tools. Tools marked *write* change something on GitHub; the others only
 read and publish `readOnlyHint`. The last column is the fine-grained token
 permission the tool needs (see [Token permissions](#token-permissions)).
 
@@ -79,6 +79,26 @@ permission the tool needs (see [Token permissions](#token-permissions)).
 | Tool | What it does | Permission |
 |------|--------------|------------|
 | `create_release_tool` | Create a release, and its tag if the tag does not exist (*write*) | Contents: write |
+
+### Organization settings (10 tools)
+
+Every tool here takes a required `org`, with no `GITHUB_DEFAULT_ORG`
+fallback, so a gateway guard on `org` cannot be skipped by leaving it out.
+The rulesets tools reach a repository's rulesets when given `repo` (the
+repository is `org`/`repo`).
+
+| Tool | What it does | Permission |
+|------|--------------|------------|
+| `get_org_fork_pr_approval_tool` | Which outside contributors need approval before their fork PRs run workflows | Organization Administration: read |
+| `set_org_fork_pr_approval_tool` | Set that policy, then read it back (*write*) | Organization Administration: write |
+| `list_org_actions_policies_tool` | List the org's Actions policies (event and actor restrictions, such as the `pull_request_target` allowance) | Organization Administration: read |
+| `get_org_actions_policy_tool` | One Actions policy | Organization Administration: read |
+| `create_org_actions_policy_tool` | Create an Actions policy from repository and workflow-path conditions and allowed events or actors (*write*) | Organization Administration: write |
+| `update_org_actions_policy_tool` | Change an Actions policy; given rules replace the stored ones (*write*) | Organization Administration: write |
+| `list_rulesets_tool` | List the org's rulesets, or a repository's | Organization Administration: read, or Metadata: read for a repository |
+| `get_ruleset_tool` | One ruleset, with its bypass list when the token may write it | as above |
+| `create_ruleset_tool` | Create a branch, tag or push ruleset from typed rules (*write*) | Organization Administration: write, or Administration: write for a repository |
+| `update_ruleset_tool` | Change a ruleset; given rules, bypass actors or conditions replace the stored ones (*write*) | as above |
 
 ### Files (2 tools)
 
@@ -219,6 +239,13 @@ visible. Only the newest run of each workflow and event is read, and a commit
 with runs of more than 30 workflows is not judged.
 
 The search tools have no permission of their own: they return what the token can already read.
+
+The organization-settings tools need the organization permission
+Administration (read for the `get_*`/`list_*` tools, write for the others); a
+repository's rulesets need the repository Administration permission instead,
+or Metadata to read them. Administration: write is the organization owner's
+grant: it can lift the rulesets that keep tags and release branches App-only,
+so give it to one operator profile and pin `org` with a gateway guard.
 
 Three things worth knowing before granting write:
 
