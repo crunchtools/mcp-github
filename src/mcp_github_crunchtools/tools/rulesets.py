@@ -292,6 +292,19 @@ def _validate_ruleset_name(value: str) -> str:
     return validate_text(value.strip() if isinstance(value, str) else value, "name")
 
 
+def _validate_ref_patterns(
+    values: list[str] | None, field: str, specials: frozenset[str] = frozenset()
+) -> list[str] | None:
+    """Ref patterns also follow git's ref shape: no ``//``, no leading or trailing . or /."""
+    patterns = validate_patterns(values, field, specials)
+    for value in patterns or []:
+        if value in specials:
+            continue
+        if "//" in value or value.startswith((".", "/")) or value.endswith((".", "/")):
+            raise ValueError(f"{field} entry {value!r} is not a valid git ref pattern")
+    return patterns
+
+
 def _validate_rules(rules: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
     if rules is None:
         return None
@@ -340,8 +353,8 @@ def _conditions(
     repository_name_protected: bool | None,
 ) -> dict[str, Any] | None:
     """Build the conditions object from the fields given, or None if none."""
-    ref_inc = validate_patterns(ref_name_include, "ref_name_include", _REF_INCLUDE_SPECIALS)
-    ref_exc = validate_patterns(ref_name_exclude, "ref_name_exclude")
+    ref_inc = _validate_ref_patterns(ref_name_include, "ref_name_include", _REF_INCLUDE_SPECIALS)
+    ref_exc = _validate_ref_patterns(ref_name_exclude, "ref_name_exclude")
     repo_inc = validate_patterns(
         repository_name_include, "repository_name_include", _REPO_INCLUDE_SPECIALS
     )

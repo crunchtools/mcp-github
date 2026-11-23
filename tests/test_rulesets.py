@@ -537,3 +537,43 @@ class TestUpdateRuleset:
             with pytest.raises(ValueError, match=r".+"):
                 await update_ruleset(**arguments)
             mock_client.return_value.build_request.assert_not_called()
+
+
+class TestRulesetLimitsAndRefShape:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("count", "accepted"), [(100, True), (101, False)])
+    async def test_bypass_actors_boundary(self, count: int, accepted: bool) -> None:
+        from mcp_github_crunchtools.tools.rulesets import create_ruleset
+
+        actors = [{"actor_id": n, "actor_type": "Team"} for n in range(1, count + 1)]
+        with _patch_client(_mock_response(status_code=201, json_data=FULL)) as mock_client:
+            if accepted:
+                await create_ruleset(**ORG_CREATE, bypass_actors=actors)
+                assert len(_call(mock_client).kwargs["json"]["bypass_actors"]) == count
+            else:
+                with pytest.raises(ValueError, match="at most 100"):
+                    await create_ruleset(**ORG_CREATE, bypass_actors=actors)
+                mock_client.return_value.build_request.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "pattern", ["refs//heads", "/refs/heads/main", "refs/heads/", ".hidden", "release."]
+    )
+    async def test_malformed_ref_pattern_is_refused(self, pattern: str) -> None:
+        from mcp_github_crunchtools.tools.rulesets import create_ruleset
+
+        arguments = {**ORG_CREATE, "ref_name_include": [pattern]}
+        with _patch_client(_mock_response(status_code=201, json_data=FULL)) as mock_client:
+            with pytest.raises(ValueError, match="not a valid git ref pattern"):
+                await create_ruleset(**arguments)
+            mock_client.return_value.build_request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_ref_glob_still_passes(self) -> None:
+        from mcp_github_crunchtools.tools.rulesets import create_ruleset
+
+        arguments = {**ORG_CREATE, "ref_name_include": ["refs/heads/ashigaru/release-*"]}
+        with _patch_client(_mock_response(status_code=201, json_data=FULL)) as mock_client:
+            await create_ruleset(**arguments)
+            conditions = _call(mock_client).kwargs["json"]["conditions"]
+            assert conditions["ref_name"]["include"] == ["refs/heads/ashigaru/release-*"]

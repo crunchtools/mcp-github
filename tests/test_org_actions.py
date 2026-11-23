@@ -290,3 +290,20 @@ class TestUpdate:
         resp = _mock_response(status_code=422, json_data={"message": "Validation Failed"})
         with _patch_client(resp), pytest.raises(GitHubApiError, match="422: Validation Failed"):
             await update_org_actions_policy("crunchtools", 7, name="n")
+
+
+class TestActorLimit:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("count", "accepted"), [(100, True), (101, False)])
+    async def test_allowed_actors_boundary(self, count: int, accepted: bool) -> None:
+        actors = [{"id": n, "type": "User"} for n in range(1, count + 1)]
+        override = {"allowed_events": None, "allowed_actors": actors}
+        with _patch_client(_mock_response(status_code=201, json_data=POLICY)) as mc:
+            if accepted:
+                await create_org_actions_policy(**_bad(**override))
+                rules = mc.return_value.build_request.call_args.kwargs["json"]["rules"]
+                assert len(rules[0]["parameters"]["allowed_actors"]) == count
+            else:
+                with pytest.raises(ValueError, match="at most 100"):
+                    await create_org_actions_policy(**_bad(**override))
+                mc.return_value.build_request.assert_not_called()
